@@ -50,9 +50,14 @@ const INITIAL_CONFIG: PDFConfig = {
   colors: {
     background: '#ffffff',
     accent: '#f97316',
+    // Promo background is intentionally independent from the download button background.
+    // (Users expect "Promo Background" to only affect the promo block.)
+    promoBg: '#f97316',
     button: '#3b82f6',
     buttonText: '#ffffff',
-    syncAccent: true,
+    // Kept for backward compatibility with older saved projects.
+    // No longer used to auto-sync promo/button backgrounds.
+    syncAccent: false,
     qrColor: '#000000',
     qrBgColor: '#ffffff'
   },
@@ -331,6 +336,36 @@ const App: React.FC = () => {
     return false;
   }, [geminiKey]);
 
+  // Normalize older saved projects/autosaves to the current config shape.
+  const normalizeLoadedConfig = useCallback((loaded: any): PDFConfig => {
+    const deepMerge = (target: any, source: any) => {
+      if (!source || typeof source !== 'object') return target;
+      for (const k of Object.keys(source)) {
+        const sv = source[k];
+        if (sv && typeof sv === 'object' && !Array.isArray(sv)) {
+          target[k] = deepMerge({ ...(target[k] || {}) }, sv);
+        } else {
+          target[k] = sv;
+        }
+      }
+      return target;
+    };
+
+    const merged = deepMerge(JSON.parse(JSON.stringify(INITIAL_CONFIG)), loaded);
+
+    // New: promoBg (independent promo background).
+    if (!merged.colors) merged.colors = (JSON.parse(JSON.stringify(INITIAL_CONFIG.colors)) as any);
+    if (!('promoBg' in merged.colors) || !merged.colors.promoBg) merged.colors.promoBg = merged.colors.accent;
+
+    // syncAccent is deprecated; keep false.
+    merged.colors.syncAccent = false;
+
+    // Keep promo text color consistent with Button Text Color by default.
+    if (merged.fonts?.blocks?.promo) merged.fonts.blocks.promo.color = merged.colors.buttonText;
+
+    return merged as PDFConfig;
+  }, []);
+
   const updateConfig = (path: string, value: any, record = true) => {
     setConfig(prev => {
       const newConfig = JSON.parse(JSON.stringify(prev));
@@ -338,7 +373,12 @@ const App: React.FC = () => {
       const keys = path.split('.');
       for (let i = 0; i < keys.length - 1; i++) { if (!current[keys[i]]) current[keys[i]] = {}; current = current[keys[i]]; }
       current[keys[keys.length - 1]] = value;
-      if (path === 'colors.accent' && newConfig.colors.syncAccent) newConfig.colors.button = value;
+
+      // Keep "Button Text Color" consistent across the Download button AND the Promo block text.
+      if (path === 'colors.buttonText') {
+        if (!newConfig.fonts?.blocks?.promo) newConfig.fonts = { ...(newConfig.fonts || {}), blocks: { ...(newConfig.fonts?.blocks || {}), promo: { family: 'Inter', size: 18, align: 'center', color: value, bold: true } } } as any;
+        else newConfig.fonts.blocks.promo.color = value;
+      }
       if (record) {
         setHistory(prevHist => {
           const next = prevHist.slice(0, historyIndex + 1);
@@ -361,8 +401,9 @@ const App: React.FC = () => {
       reader.onload = (event) => {
         try {
           const loadedConfig = JSON.parse(event.target?.result as string);
-          setConfig(loadedConfig);
-          setHistory([loadedConfig]);
+          const normalized = normalizeLoadedConfig(loadedConfig);
+          setConfig(normalized);
+          setHistory([normalized]);
           setHistoryIndex(0);
         } catch (err) {
           alert('Failed to load project file. Invalid format.');
@@ -859,13 +900,18 @@ const App: React.FC = () => {
             <h3 className="text-sm font-black text-slate-900 uppercase">Branding Colors</h3>
             {[
               { id: 'background', label: 'Canvas Background' },
-              { id: 'accent', label: 'Promo Background' },
+              { id: 'promoBg', label: 'Promo Background' },
               { id: 'button', label: 'Button Background' },
               { id: 'buttonText', label: 'Button Text Color' }
             ].map(c => (
               <div key={c.id} className="flex items-center justify-between p-4 bg-white border-2 border-slate-100 rounded-2xl">
                 <label className="text-[10px] font-black text-slate-900 uppercase">{c.label}</label>
-                <input type="color" value={(config.colors as any)[c.id]} onChange={e => updateConfig(`colors.${c.id}`, e.target.value)} className="w-10 h-10 rounded-xl border-2 border-slate-100 cursor-pointer" />
+                <input
+                  type="color"
+                  value={c.id === 'promoBg' ? ((config.colors as any).promoBg ?? config.colors.accent) : (config.colors as any)[c.id]}
+                  onChange={e => updateConfig(`colors.${c.id}`, e.target.value)}
+                  className="w-10 h-10 rounded-xl border-2 border-slate-100 cursor-pointer"
+                />
               </div>
             ))}
           </div>
@@ -1111,7 +1157,7 @@ const App: React.FC = () => {
 
              <div className="flex gap-3 mt-6">
                <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); localStorage.removeItem('lavender_autosave'); setRestoreModal(false); }} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs hover:bg-slate-200">New Project</button>
-               <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); const data = localStorage.getItem('lavender_autosave'); if (data) setConfig(JSON.parse(data)); setRestoreModal(false); }} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-100">Resume</button>
+               <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); const data = localStorage.getItem('lavender_autosave'); if (data) setConfig(normalizeLoadedConfig(JSON.parse(data))); setRestoreModal(false); }} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-100">Resume</button>
              </div>
           </div>
         </div>
@@ -1390,7 +1436,7 @@ const App: React.FC = () => {
           <DraggableBlock id="promo" config={config} updateConfig={updateConfig} visible={config.visibility.promo && config.promo.enabled} onSnap={setSnapLines} onSelect={setSelectedId} isSelected={selectedId === 'promo'} onContextMenu={handleContextMenu} zoom={zoom}>
             <div 
               style={{ 
-                backgroundColor: config.colors.accent, 
+                backgroundColor: (config.colors as any).promoBg ?? config.colors.accent, 
                 color: config.fonts.blocks.promo.color,
                 fontWeight: config.fonts.blocks.promo.bold ? 'bold' : 'normal',
                 fontStyle: config.fonts.blocks.promo.italic ? 'italic' : 'normal',
