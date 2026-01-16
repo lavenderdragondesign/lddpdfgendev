@@ -1,25 +1,29 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Netlify & GitHub Ready Project
 
-# LavenderDragonDesign's MD PDF Generator
+This project has been prepped for GitHub and Netlify deployment.
 
-This is a Vite + React app for building branded “download page” PDFs.
+## Quick Start
 
-Optional: The Content tab includes an **Enhance with Gemini** button. It uses a **per-user Gemini API key** stored locally in your browser.
+```bash
+npm install
+npm run dev
+```
 
-## Run Locally
+## Build
 
-**Prerequisites:**  Node.js
+```bash
+npm run build
+```
 
+## Preview (optional)
 
-1. Install dependencies:
-   `npm install`
-2. Run the app:
-   `npm run dev`
+```bash
+npm run preview
+```
 
-## Gemini API Key (optional)
+## Deploy to Netlify
 
-Open **Settings** (gear icon) and paste your own Gemini API key.
-
-No key is required to use the PDF generator features.
+- Create a new site on Netlify and connect your GitHub repo.
+- Build command: `npm run build`
+- Publish directory: `dist`
+- SPA fallback is configured via `netlify.toml` and `public/_redirects`.
