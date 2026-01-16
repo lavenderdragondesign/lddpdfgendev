@@ -1,0 +1,12 @@
+[build]
+  command = "npm install --no-audit --no-fund --progress=false && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA fallback for client-side routing (safe even if you don't use routing)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
