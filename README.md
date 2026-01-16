@@ -1,29 +1,21 @@
-# Netlify & GitHub Ready Project
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+</div>
 
-This project has been prepped for GitHub and Netlify deployment.
+# LavenderDragonDesign's PDF Generator
 
-## Quick Start
+This repo contains everything you need to run the app locally and deploy it (e.g., GitHub + Netlify).
 
-```bash
-npm install
-npm run dev
-```
+## Run Locally
+
+**Prerequisites:** Node.js
+
+
+1. Install dependencies:
+   `npm install`
+2. Run the app:
+   `npm run dev`
 
 ## Build
 
-```bash
-npm run build
-```
-
-## Preview (optional)
-
-```bash
-npm run preview
-```
-
-## Deploy to Netlify
-
-- Create a new site on Netlify and connect your GitHub repo.
-- Build command: `npm run build`
-- Publish directory: `dist`
-- SPA fallback is configured via `netlify.toml` and `public/_redirects`.
+`npm run build`
