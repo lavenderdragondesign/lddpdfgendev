@@ -771,11 +771,23 @@ const App: React.FC = () => {
             </div>
             <div className="pt-4 border-t border-slate-100">
                {config.source.mode === 'upload' ? (
-                 <div onClick={() => sourceInputRef.current?.click()} className="border-4 border-dashed border-slate-200 p-10 rounded-3xl flex flex-col items-center gap-3 cursor-pointer hover:border-indigo-400 transition-all bg-white hover:bg-indigo-50/20 group relative">
-                   {isExtracting ? <Loader2 size={40} className="text-indigo-600 animate-spin" /> : <Upload size={40} className="text-slate-400 group-hover:text-indigo-600 transition-colors" />}
-                   <p className="text-[10px] font-black text-slate-900 text-center group-hover:text-indigo-600 transition-colors">{config.source.fileName || 'Click here to upload MD download.pdf'}</p>
-                   <input type="file" ref={sourceInputRef} hidden accept=".pdf" onChange={e => handleFileUpload(e, 'source')} />
-                 </div>
+                 <>
+                   <div onClick={() => sourceInputRef.current?.click()} className="border-4 border-dashed border-slate-200 p-10 rounded-3xl flex flex-col items-center gap-3 cursor-pointer hover:border-indigo-400 transition-all bg-white hover:bg-indigo-50/20 group relative">
+                     {isExtracting ? <Loader2 size={40} className="text-indigo-600 animate-spin" /> : <Upload size={40} className="text-slate-400 group-hover:text-indigo-600 transition-colors" />}
+                     <p className="text-[10px] font-black text-slate-900 text-center group-hover:text-indigo-600 transition-colors">{config.source.fileName || 'Click here to upload MD download.pdf'}</p>
+                     <input type="file" ref={sourceInputRef} hidden accept=".pdf" onChange={e => handleFileUpload(e, 'source')} />
+                   </div>
+
+                   {/* Tip: MD Download.pdf */}
+                   <div className="mt-4 rounded-2xl border-2 border-slate-200 bg-slate-50 p-4">
+                     <p className="text-[12px] font-black text-slate-900 leading-snug">
+                       Upload your original <span className="underline">Download.pdf</span> from MD.
+                     </p>
+                     <p className="mt-1 text-[11px] font-semibold text-slate-700 leading-snug">
+                       We’ll auto add it to your download button — or add your download link manually.
+                     </p>
+                   </div>
+                 </>
                ) : (
                  <div className="space-y-3">
                    <label className="text-[10px] font-black text-slate-900 uppercase">URL for {config.source.mode}</label>
