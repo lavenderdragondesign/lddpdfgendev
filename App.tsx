@@ -303,6 +303,20 @@ const App: React.FC = () => {
     localStorage.setItem('lavender_theme', theme);
   }, [theme]);
 
+  // Click anywhere outside the canvas to deselect the currently selected block
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const canvas = document.getElementById('pdf-canvas');
+      if (!canvas) return;
+      if (!canvas.contains(e.target as Node)) {
+        setSelectedId(null);
+        setEditingId(null);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
+
 
   const persistGeminiKey = useCallback(() => {
     const key = (geminiKey || '').trim();
@@ -858,48 +872,70 @@ const App: React.FC = () => {
         );
       case EditorTab.CONTENT:
         return (
-          <div className="space-y-4">
-            <h3 className="text-sm font-black text-slate-900 uppercase">Text Content</h3>
-            {(['title', 'shortDesc', 'footer'] as const).map(f => (
-              <div key={f} className="space-y-2">
+          <div className="space-y-5">
+            <div className="p-4 rounded-2xl bg-white border-2 border-indigo-100">
+              <div className="text-[12px] font-black text-slate-900">100% FREE</div>
+              <div className="text-[11px] font-bold text-slate-600 mt-1">
+                No API key required to generate PDFs. AI enhancement is optional.
+              </div>
+            </div>
+
+            <h3 className="text-base font-black text-slate-900 uppercase">Text Content</h3>
+
+            {([
+              { key: 'title', label: 'Title' },
+              { key: 'shortDesc', label: 'Short description' },
+              { key: 'footer', label: 'Footer' },
+            ] as const).map(({ key, label }) => (
+              <div key={key} className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-[10px] font-black text-slate-900 uppercase">{f}</label>
+                  <label className="text-[11px] font-black text-slate-900 uppercase">{label}</label>
                   <button
-                    onClick={() => enhanceFieldWithGemini(f)}
-                    className="px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest bg-white border-2 border-slate-100 text-slate-900 hover:bg-slate-50 hover:border-indigo-200 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-slate-100"
-                    title={hasGeminiKey ? 'Enhance with Gemini' : 'Add your Gemini API key in Settings to enable'}
+                    onClick={() => enhanceFieldWithGemini(key)}
+                    className="px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest bg-white border-2 border-slate-100 text-slate-900 hover:bg-slate-50 hover:border-indigo-200 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-slate-100"
+                    title={hasGeminiKey ? 'Enhance with Gemini' : 'Optional: add your Gemini API key in Settings to enable'}
                     disabled={aiBusy || !hasGeminiKey}
                   >
                     {aiBusy ? <Loader2 size={12} className="animate-spin" /> : <Waves size={12} />}
                     Enhance
                   </button>
                 </div>
-                <input className="w-full p-3 bg-white border-2 border-slate-100 rounded-2xl text-xs font-black" value={(config.content as any)[f]} onChange={e => updateConfig(`content.${f}`, e.target.value)} />
+                <input
+                  className="w-full p-3 bg-white border-2 border-slate-100 rounded-2xl text-sm font-black"
+                  value={(config.content as any)[key]}
+                  onChange={e => updateConfig(`content.${key}`, e.target.value)}
+                />
               </div>
             ))}
+
             <div>
               <div className="flex items-center justify-between">
-                <label className="text-[10px] font-black text-slate-900 uppercase">Main Description</label>
+                <label className="text-[11px] font-black text-slate-900 uppercase">Main description</label>
                 <button
                   onClick={() => enhanceFieldWithGemini('mainDesc')}
-                  className="px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest bg-white border-2 border-slate-100 text-slate-900 hover:bg-slate-50 hover:border-indigo-200 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-slate-100"
-                  title={hasGeminiKey ? 'Enhance with Gemini' : 'Add your Gemini API key in Settings to enable'}
+                  className="px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest bg-white border-2 border-slate-100 text-slate-900 hover:bg-slate-50 hover:border-indigo-200 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-slate-100"
+                  title={hasGeminiKey ? 'Enhance with Gemini' : 'Optional: add your Gemini API key in Settings to enable'}
                   disabled={aiBusy || !hasGeminiKey}
                 >
                   {aiBusy ? <Loader2 size={12} className="animate-spin" /> : <Waves size={12} />}
                   Enhance
                 </button>
               </div>
-              <textarea className="w-full mt-2 p-3 bg-white border-2 border-slate-100 rounded-2xl text-xs font-black h-32" value={config.content.mainDesc} onChange={e => updateConfig('content.mainDesc', e.target.value)} />
+              <textarea
+                className="w-full mt-2 p-3 bg-white border-2 border-slate-100 rounded-2xl text-sm font-black h-32"
+                value={config.content.mainDesc}
+                onChange={e => updateConfig('content.mainDesc', e.target.value)}
+              />
             </div>
 
             {aiError && (
-              <div className="p-4 rounded-2xl bg-red-50 border-2 border-red-100 text-red-700 text-xs font-black">
+              <div className="p-4 rounded-2xl bg-red-50 border-2 border-red-100 text-red-700 text-sm font-black">
                 {aiError}
               </div>
             )}
           </div>
         );
+
       case EditorTab.PRESETS:
         return (
           <div className="space-y-6">
