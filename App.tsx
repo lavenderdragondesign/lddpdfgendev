@@ -10,14 +10,18 @@ import {
   RotateCw, Copy, Scissors, Clipboard, Undo2, Redo2, Layers, Eye,
   Link as LinkIcon, HardDrive, Cloud, Sun, Moon, Info, MousePointer2, Move,
   Maximize, Upload, Link as LinkIcon2, CloudDrizzle, ShoppingBag as ShopifyIcon, Laptop,
-  Layout, Minimize2, ChevronRight, ChevronDown, EyeOff, Search, QrCode, Heart, FolderOpen,
+  Layout, Minimize2, ChevronRight, ChevronDown, EyeOff, Search, QrCode, Heart, Coffee, FolderOpen,
   Waves, MousePointer, FileJson, Bold, Italic, Underline, ChevronLeft
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import * as pdfjsLib from 'pdfjs-dist';
+import { enhancePdfCopy, getStoredGeminiKey, LDD_GEMINI_KEY_STORAGE, MissingGeminiKeyError } from './services/geminiService';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.10.38/build/pdf.worker.mjs`;
+
+const LDD_ETY_SHOP_URL = 'https://www.etsy.com/shop/LavenderDragonDesign';
+const LDD_BMAC_URL = 'https://www.buymeacoffee.com/lavenderdragondesign';
 
 const CANVAS_WIDTH = 816; 
 const CANVAS_HEIGHT = 1056; 
@@ -69,7 +73,7 @@ const INITIAL_CONFIG: PDFConfig = {
   paper: { size: 'US Letter', orientation: 'portrait', bleed: 'None' },
   visibility: {
     logo: false, title: true, button: true, qr: false, promo: true, 
-    socials: true, footer: true, shortDesc: true, mainDesc: true, watermark: false
+    socials: false, footer: true, shortDesc: true, mainDesc: true, watermark: false
   },
   layout: {
     btnWidth: 60, btnHeight: 40, freeform: true, snap: true, guides: false, qr: true,
@@ -232,6 +236,19 @@ const App: React.FC = () => {
     return JSON.parse(localStorage.getItem('lavender_presets') || '[]');
   });
 
+  // --- AI Settings (per-user key stored locally) ---
+  const [showSettings, setShowSettings] = useState(false);
+  const [geminiKey, setGeminiKey] = useState(() => getStoredGeminiKey());
+  const hasGeminiKey = Boolean((geminiKey || '').trim());
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [needsApiKey, setNeedsApiKey] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [restoreDontAsk, setRestoreDontAsk] = useState(false);
+
+  // Appearance
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('lavender_theme') as any) || 'light');
+
   const [zoom, setZoom] = useState(0.65);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -258,17 +275,47 @@ const App: React.FC = () => {
     const hidden = localStorage.getItem('lavender_welcome_hidden');
     if (!hidden) setShowOnboarding(true);
 
+    const skipRestore = localStorage.getItem('lavender_restore_hidden');
     const savedWork = localStorage.getItem('lavender_autosave');
-    if (savedWork) setRestoreModal(true);
+    if (savedWork && !skipRestore) setRestoreModal(true);
   }, []);
 
   // Auto-save logic
+
+  // Auto-toggle socials visibility (show only when at least one social link is filled)
+  useEffect(() => {
+    const s = config.socials;
+    const has = Boolean((s.facebook||'').trim() || (s.instagram||'').trim() || (s.etsy||'').trim() || (s.website||'').trim() || (s.shopify||'').trim() || (s.woo||'').trim());
+    if (config.visibility.socials !== has) {
+      setConfig(prev => ({ ...prev, visibility: { ...prev.visibility, socials: has } }));
+    }
+  }, [config.socials.facebook, config.socials.instagram, config.socials.etsy, config.socials.website, config.socials.shopify, config.socials.woo]);
   useEffect(() => {
     const timer = setTimeout(() => {
       localStorage.setItem('lavender_autosave', JSON.stringify(config));
     }, 2000);
     return () => clearTimeout(timer);
   }, [config]);
+
+  // Keep theme and auto-socials visibility in sync
+  useEffect(() => {
+    document.documentElement.classList.toggle('ldd-dark', theme === 'dark');
+    localStorage.setItem('lavender_theme', theme);
+  }, [theme]);
+
+
+  const persistGeminiKey = useCallback(() => {
+    const key = (geminiKey || '').trim();
+    if (key) localStorage.setItem(LDD_GEMINI_KEY_STORAGE, key);
+    else localStorage.removeItem(LDD_GEMINI_KEY_STORAGE);
+  }, [geminiKey]);
+
+  const ensureGeminiKey = useCallback(() => {
+    const key = (geminiKey || '').trim();
+    if (key) return true;
+    setNeedsApiKey(true);
+    return false;
+  }, [geminiKey]);
 
   const updateConfig = (path: string, value: any, record = true) => {
     setConfig(prev => {
@@ -374,6 +421,25 @@ const App: React.FC = () => {
     };
     reader.readAsDataURL(file);
   };
+
+  const enhanceFieldWithGemini = useCallback(async (kind: 'title' | 'shortDesc' | 'mainDesc' | 'footer') => {
+    if (!ensureGeminiKey()) return;
+    setAiError(null);
+    setAiBusy(true);
+    try {
+      const currentText = (config.content as any)[kind] || '';
+      const updated = await enhancePdfCopy(kind, currentText);
+      if (updated) updateConfig(`content.${kind}`, updated, true);
+    } catch (err: any) {
+      if (err instanceof MissingGeminiKeyError) {
+        setNeedsApiKey(true);
+      } else {
+        setAiError(err?.message || 'AI request failed');
+      }
+    } finally {
+      setAiBusy(false);
+    }
+  }, [config.content, ensureGeminiKey, updateConfig]);
 
   const handleSaveProject = () => {
     try {
@@ -560,6 +626,8 @@ const App: React.FC = () => {
   const handleCanvasMouseMove = (e: React.MouseEvent) => { if (isPanning) { const dx = e.clientX - lastMousePos.current.x; const dy = e.clientY - lastMousePos.current.y; setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy })); lastMousePos.current = { x: e.clientX, y: e.clientY }; } };
   const handleCanvasMouseUp = () => setIsPanning(false);
   const handleContextMenu = useCallback((e: React.MouseEvent, id: string, isExtra: boolean) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, id, isExtra }); }, []);
+
+  const hexNoHash = (hex: string) => (hex || '').replace('#','').trim() || '475569';
 
   const activeSocialLinks = useMemo(() => {
     return [
@@ -792,16 +860,44 @@ const App: React.FC = () => {
         return (
           <div className="space-y-4">
             <h3 className="text-sm font-black text-slate-900 uppercase">Text Content</h3>
-            {['title', 'shortDesc', 'footer'].map(f => (
-              <div key={f}>
-                <label className="text-[10px] font-black text-slate-900 uppercase">{f}</label>
-                <input className="w-full mt-1 p-3 bg-white border-2 border-slate-100 rounded-2xl text-xs font-black" value={(config.content as any)[f]} onChange={e => updateConfig(`content.${f}`, e.target.value)} />
+            {(['title', 'shortDesc', 'footer'] as const).map(f => (
+              <div key={f} className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-black text-slate-900 uppercase">{f}</label>
+                  <button
+                    onClick={() => enhanceFieldWithGemini(f)}
+                    className="px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest bg-white border-2 border-slate-100 text-slate-900 hover:bg-slate-50 hover:border-indigo-200 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-slate-100"
+                    title={hasGeminiKey ? 'Enhance with Gemini' : 'Add your Gemini API key in Settings to enable'}
+                    disabled={aiBusy || !hasGeminiKey}
+                  >
+                    {aiBusy ? <Loader2 size={12} className="animate-spin" /> : <Waves size={12} />}
+                    Enhance
+                  </button>
+                </div>
+                <input className="w-full p-3 bg-white border-2 border-slate-100 rounded-2xl text-xs font-black" value={(config.content as any)[f]} onChange={e => updateConfig(`content.${f}`, e.target.value)} />
               </div>
             ))}
             <div>
-              <label className="text-[10px] font-black text-slate-900 uppercase">Main Description</label>
-              <textarea className="w-full mt-1 p-3 bg-white border-2 border-slate-100 rounded-2xl text-xs font-black h-32" value={config.content.mainDesc} onChange={e => updateConfig('content.mainDesc', e.target.value)} />
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] font-black text-slate-900 uppercase">Main Description</label>
+                <button
+                  onClick={() => enhanceFieldWithGemini('mainDesc')}
+                  className="px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest bg-white border-2 border-slate-100 text-slate-900 hover:bg-slate-50 hover:border-indigo-200 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-slate-100"
+                  title={hasGeminiKey ? 'Enhance with Gemini' : 'Add your Gemini API key in Settings to enable'}
+                  disabled={aiBusy || !hasGeminiKey}
+                >
+                  {aiBusy ? <Loader2 size={12} className="animate-spin" /> : <Waves size={12} />}
+                  Enhance
+                </button>
+              </div>
+              <textarea className="w-full mt-2 p-3 bg-white border-2 border-slate-100 rounded-2xl text-xs font-black h-32" value={config.content.mainDesc} onChange={e => updateConfig('content.mainDesc', e.target.value)} />
             </div>
+
+            {aiError && (
+              <div className="p-4 rounded-2xl bg-red-50 border-2 border-red-100 text-red-700 text-xs font-black">
+                {aiError}
+              </div>
+            )}
           </div>
         );
       case EditorTab.PRESETS:
@@ -972,10 +1068,152 @@ const App: React.FC = () => {
           <div className="bg-white rounded-[30px] p-8 max-w-sm w-full shadow-2xl text-center">
              <div className="w-16 h-16 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-4"><RotateCw className="text-indigo-600" size={32} /></div>
              <h3 className="text-xl font-black text-slate-900 mb-2">Resume Last Work?</h3>
+             <label className="mt-4 mb-2 flex items-center justify-center gap-3 cursor-pointer group">
+               <input type="checkbox" checked={restoreDontAsk} onChange={e => setRestoreDontAsk(e.target.checked)} className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+               <span className="text-xs font-black text-slate-600 group-hover:text-indigo-600 transition-colors">Don't ask again</span>
+             </label>
+
              <div className="flex gap-3 mt-6">
-               <button onClick={() => { localStorage.removeItem('lavender_autosave'); setRestoreModal(false); }} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs hover:bg-slate-200">New Project</button>
-               <button onClick={() => { const data = localStorage.getItem('lavender_autosave'); if (data) setConfig(JSON.parse(data)); setRestoreModal(false); }} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-100">Resume</button>
+               <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); localStorage.removeItem('lavender_autosave'); setRestoreModal(false); }} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs hover:bg-slate-200">New Project</button>
+               <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); const data = localStorage.getItem('lavender_autosave'); if (data) setConfig(JSON.parse(data)); setRestoreModal(false); }} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-100">Resume</button>
              </div>
+          </div>
+        </div>
+      )}
+
+      {/* API Key Required Popup */}
+      {needsApiKey && (
+        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] p-7 max-w-md w-full shadow-2xl border border-slate-100">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center shrink-0">
+                <Info className="text-indigo-600" size={24} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-black text-slate-900">API key needed</h3>
+                <p className="text-xs text-slate-600 font-medium mt-1">
+                  This feature uses Gemini. Add your own Gemini API key in Settings to enable AI tools.
+                </p>
+              </div>
+              <button onClick={() => setNeedsApiKey(false)} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500" title="Close"><X size={18} /></button>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => { setNeedsApiKey(false); setShowSettings(true); }}
+                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all"
+              >
+                Open Settings
+              </button>
+              <button
+                onClick={() => setNeedsApiKey(false)}
+                className="flex-1 py-3 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200 transition-all"
+              >
+                Not now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[30px] p-8 max-w-2xl w-full shadow-2xl border border-slate-100 relative">
+            <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 p-2 rounded-xl hover:bg-slate-100 text-slate-500" title="Close"><X size={18} /></button>
+            <div className="flex items-center gap-4 mb-6">
+              <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center"><Settings className="text-indigo-600" size={24} /></div>
+              <div>
+                <h3 className="text-xl font-black text-slate-900">Settings</h3>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">API Key · Privacy · Liability</p>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-6">
+              <div className="space-y-4">
+                <h4 className="text-sm font-black text-slate-900 uppercase">Gemini API Key (per user)</h4>
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                  <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Your Gemini API Key</label>
+                  <div className="flex gap-2 mt-2">
+                    <input
+                      type={showGeminiKey ? 'text' : 'password'}
+                      value={geminiKey}
+                      onChange={e => setGeminiKey(e.target.value)}
+                      placeholder="Paste your key here"
+                      className="flex-1 p-3 bg-white border-2 border-slate-200 rounded-xl text-xs font-black outline-none focus:border-indigo-600"
+                    />
+                    <button onClick={() => setShowGeminiKey(v => !v)} className="px-3 py-3 rounded-xl bg-white border-2 border-slate-200 text-slate-700 hover:border-indigo-200" title={showGeminiKey ? 'Hide' : 'Show'}>
+                      {showGeminiKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={() => { persistGeminiKey(); setAiError(null); }}
+                      className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-700 transition-all"
+                    >
+                      Save Key
+                    </button>
+                    <button
+                      onClick={() => { setGeminiKey(''); localStorage.removeItem(LDD_GEMINI_KEY_STORAGE); setShowGeminiKey(false); }}
+                      className="flex-1 py-2.5 bg-white border-2 border-slate-200 text-slate-700 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-50 transition-all"
+                    >
+                      Clear
+                    </button>
+                  </div>
+
+                  <div className="mt-4 space-y-2">
+                    <button
+                      onClick={() => window.open('https://aistudio.google.com/app/apikey', '_blank', 'noopener,noreferrer')}
+                      className="w-full py-2.5 bg-emerald-50 text-emerald-700 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-100 transition-all"
+                    >
+                      Get a free Gemini API key
+                    </button>
+                    <ol className="text-xs text-slate-600 font-medium list-decimal pl-5 space-y-1">
+                      <li>Open the Gemini API Key page.</li>
+                      <li>Sign in with Google and create a key.</li>
+                      <li>Paste it here, then click <span className="font-black">Save Key</span>.</li>
+                    </ol>
+                    <p className="text-[10px] text-slate-500 font-bold italic">
+                      Tip: Set usage limits/quotas in your Google project so you never get surprised.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-white border-2 border-slate-100">
+                  <h4 className="text-sm font-black text-slate-900 uppercase mb-2">Privacy Policy</h4>
+                  <p className="text-xs text-slate-600 font-medium leading-relaxed">
+                    Your Gemini API key is stored locally in your browser (localStorage) and is not sent to LavenderDragonDesign.
+                    When you use an AI feature, your prompt/text and your key are sent directly to Google’s Gemini API to generate a response.
+                    Avoid entering sensitive personal information.
+                  </p>
+                </div>
+                <div className="p-4 rounded-2xl bg-white border-2 border-slate-100">
+                  <h4 className="text-sm font-black text-slate-900 uppercase mb-2">Liability Notice</h4>
+                  <p className="text-xs text-slate-600 font-medium leading-relaxed">
+                    LavenderDragonDesign is not liable for API charges, usage, quota overruns, or costs incurred from your Gemini API key.
+                    You are responsible for your own key and billing settings. If you publish this tool publicly, add rate limits and quotas.
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-white border-2 border-slate-100">
+                  <h4 className="text-sm font-black text-slate-900 uppercase mb-2">Support</h4>
+                  <a
+                    href={LDD_BMAC_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-3 rounded-2xl bg-white border-2 border-slate-200 text-slate-900 hover:bg-slate-50 transition-all text-[10px] font-black uppercase tracking-widest"
+                  >
+                    <Coffee size={16} /> Buy Me a Coffee
+                  </a>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button onClick={() => setShowSettings(false)} className="px-5 py-3 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200">Close</button>
+            </div>
           </div>
         </div>
       )}
@@ -996,6 +1234,17 @@ const App: React.FC = () => {
             <span className="text-[9px] font-black uppercase tracking-widest">{item.label}</span>
           </button>
         ))}
+
+        <div className="flex-1" />
+
+        <button
+          onClick={() => setShowSettings(true)}
+          className="flex flex-col items-center gap-2 transition-all text-slate-900 hover:text-indigo-500"
+          title="Settings"
+        >
+          <div className="p-3 rounded-2xl transition-all"><Settings size={22} /></div>
+          <span className="text-[9px] font-black uppercase tracking-widest">Settings</span>
+        </button>
       </div>
 
       {/* MAIN PROPERTY SIDEBAR (Collapsible) */}
@@ -1008,8 +1257,15 @@ const App: React.FC = () => {
           >
             <ChevronLeft size={20} />
           </button>
-          <h2 className="text-xl font-black text-slate-900 leading-tight">LavenderDragonDesign's PDF Generator</h2>
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1 text-center">Branded Download Pages</p>
+          <div className="flex flex-col items-center gap-3">
+            <div className="shrink-0 rounded-3xl overflow-hidden ring-2 ring-indigo-100">
+              <img src="/icon128.png" alt="LavenderDragonDesign" className="w-14 h-14 object-cover" />
+            </div>
+            <div className="w-full">
+              <h2 className="text-xl font-black text-slate-900 leading-tight text-center whitespace-normal break-words">LavenderDragonDesign's PDF Generator</h2>
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1 text-center">Branded Download Pages</p>
+            </div>
+          </div>
         </header>
         <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">{renderTabContent()}</div>
         <div className="p-6 bg-slate-50 border-t-2 border-slate-100">
@@ -1017,9 +1273,8 @@ const App: React.FC = () => {
             <button onClick={() => handleExportPDF(true)} className="flex-1 py-4 bg-white border-2 border-slate-200 text-slate-900 rounded-2xl font-black text-xs hover:bg-slate-50 transition-all flex items-center justify-center gap-2"><Eye size={16} /> Preview</button>
             <button onClick={() => handleExportPDF(false)} className="flex-[1.5] py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200 flex items-center justify-center gap-2"><Download size={16} /> Export PDF</button>
           </div>
-          <p className="text-center text-[10px] font-black text-slate-400 uppercase flex items-center justify-center gap-1">Made with <Heart size={10} className="text-red-500 fill-red-500 animate-pulse" /> by Andrea</p>
+          </div>
         </div>
-      </div>
 
       {/* RE-OPEN SIDEBAR BUTTON (Visible when minimized) */}
       {isSidebarMinimized && (
@@ -1033,6 +1288,17 @@ const App: React.FC = () => {
       )}
 
       <div className={`flex-1 relative bg-slate-100 overflow-hidden flex items-center justify-center pt-16 ${isPanning ? 'cursor-grabbing' : 'cursor-auto'}`} onWheel={handleScroll} onMouseDown={handleCanvasMouseDown} onMouseMove={handleCanvasMouseMove} onMouseUp={handleCanvasMouseUp} onContextMenu={(e) => handleContextMenu(e, 'canvas', false)} onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }} onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleFileUpload(e as any, 'source'); }}>
+        
+        <div className="no-print absolute top-4 right-4 z-50">
+          <button
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className="flex items-center gap-2 px-3 py-2 rounded-2xl bg-white border-2 border-slate-100 text-slate-900 shadow-lg hover:border-indigo-200 hover:text-indigo-600 transition-all text-[10px] font-black uppercase tracking-widest"
+            title="Toggle theme"
+          >
+            {theme === 'dark' ? <Moon size={14} /> : <Sun size={14} />}
+            {theme === 'dark' ? 'Dark' : 'Light'}
+          </button>
+        </div>
         <div className="absolute inset-0 dashed-grid pointer-events-none opacity-50" />
         <div id="pdf-canvas" className="relative bg-white shadow-2xl shrink-0 border-2 border-slate-200 transition-all duration-300" style={{ width: `${CANVAS_WIDTH}px`, height: `${CANVAS_HEIGHT}px`, backgroundColor: config.colors.background, transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: 'center' }} onClick={(e) => { if (e.target === e.currentTarget) setSelectedId(null); }}>
           {config.assets.watermark && config.visibility.watermark && (
@@ -1062,13 +1328,18 @@ const App: React.FC = () => {
                 onBlur={(e) => { if (blockId !== 'socials') updateConfig(`content.${blockId}`, (e.target as HTMLElement).innerText); setEditingId(null); }}
               >
                 {blockId === 'socials' ? (
-                  <div className="flex gap-4 items-center">
-                    {activeSocialLinks.length > 0 ? activeSocialLinks.map((social, idx) => (
-                      <div key={idx} className="flex items-center gap-1 opacity-80 hover:opacity-100 transition-opacity">
-                        <social.icon size={Math.max(14, config.fonts.blocks.socials.size * 1.2)} />
-                        {activeSocialLinks.length < 3 && <span className="text-[0.8em] font-bold">{social.id}</span>}
-                      </div>
-                    )) : <span className="text-[0.8em] italic opacity-50">Social Links (Add in Sidebar)</span>}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex gap-4 items-center">
+                      {activeSocialLinks.length > 0 ? activeSocialLinks.map((social, idx) => {
+                        const size = Math.max(14, config.fonts.blocks.socials.size * 1.2);
+                        return (
+                          <div key={idx} className="flex items-center gap-1 opacity-80 hover:opacity-100 transition-opacity">
+                            <social.icon size={size} />
+                            {activeSocialLinks.length < 3 && <span className="text-[0.8em] font-bold">{social.id}</span>}
+                          </div>
+                        );
+                      }) : <span className="text-[0.8em] italic opacity-50">Social Links (Add in Sidebar)</span>}
+                    </div>
                   </div>
                 ) : (
                   (config.content as any)[blockId]
