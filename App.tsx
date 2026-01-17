@@ -81,17 +81,18 @@ const INITIAL_CONFIG: PDFConfig = {
     socials: false, footer: true, shortDesc: true, mainDesc: true, watermark: false
   },
   layout: {
-    btnWidth: 60, btnHeight: 40, freeform: true, snap: true, guides: false, qr: true,
+    btnWidth: 60, btnHeight: 40, freeform: true, snap: true, guides: false, groups: [], qr: true,
     blocks: {
-      title: { x: 208, y: 80, w: 400, h: 60 },
-      shortDesc: { x: 208, y: 160, w: 400, h: 40 },
-      mainDesc: { x: 158, y: 220, w: 500, h: 120 },
-      button: { x: 283, y: 380, w: 250, h: 60 },
-      qr: { x: 448, y: 460, w: 120, h: 120 },
-      promo: { x: 143, y: 620, w: 530, h: 150 },
-      footer: { x: 208, y: 920, w: 400, h: 40 },
+      // Roomier defaults so the big placeholder text doesn't pile up on first load.
+      title: { x: 158, y: 70, w: 500, h: 80 },
+      shortDesc: { x: 158, y: 170, w: 500, h: 70 },
+      mainDesc: { x: 118, y: 260, w: 580, h: 220 },
+      button: { x: 283, y: 510, w: 250, h: 70 },
+      qr: { x: 448, y: 600, w: 120, h: 120 },
+      promo: { x: 118, y: 740, w: 580, h: 180 },
+      footer: { x: 158, y: 945, w: 500, h: 40 },
       logo: { x: 378, y: 20, w: 60, h: 60 },
-      socials: { x: 158, y: 960, w: 500, h: 40 }
+      socials: { x: 118, y: 995, w: 580, h: 40 }
     },
     extraLayers: []
   }
@@ -184,16 +185,18 @@ const DraggableBlock: React.FC<{
   visible: boolean;
   onSnap?: (lines: { h: number[], v: number[] }) => void;
   onContextMenu: (e: React.MouseEvent, id: string, isExtra: boolean) => void;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, mode?: 'replace' | 'toggle' | 'add' | 'keep') => void;
+  selectedIds: string[];
   onDoubleClick?: () => void;
   isExtra?: boolean;
   zoom: number;
   isSelected?: boolean;
+  isPrimary?: boolean;
   isEditing?: boolean;
-}> = ({ id, config, updateConfig, children, visible, onSnap, onContextMenu, onSelect, onDoubleClick, isExtra = false, zoom, isSelected, isEditing }) => {
+	}> = ({ id, config, updateConfig, children, visible, onSnap, onContextMenu, onSelect, selectedIds, onDoubleClick, isExtra = false, zoom, isSelected, isPrimary, isEditing }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [resizeHandle, setResizeHandle] = useState<string | null>(null);
-  const [startPos, setStartPos] = useState({ x: 0, y: 0, blockX: 0, blockY: 0, blockW: 0, blockH: 0 });
+  const [startPos, setStartPos] = useState({ x: 0, y: 0, blockX: 0, blockY: 0, blockW: 0, blockH: 0, multiIds: [] as string[], snapshots: {} as Record<string, {x:number,y:number,w:number,h:number, isExtra:boolean}> });
   
   const block = isExtra 
     ? config.layout.extraLayers.find(l => l.id === id) as BlockLayout 
@@ -233,11 +236,37 @@ const DraggableBlock: React.FC<{
         onSnap?.({ h: linesH, v: linesV });
       }
 
-      if (isExtra) {
-        const newLayers = config.layout.extraLayers.map(l => l.id === id ? { ...l, x: newX, y: newY, w: newW, h: newH } : l);
-        updateConfig('layout.extraLayers', newLayers, false);
+      // Apply movement (single or multi)
+      if (startPos.multiIds && startPos.multiIds.length > 1 && startPos.snapshots) {
+        const deltaX = newX - startPos.blockX;
+        const deltaY = newY - startPos.blockY;
+
+        // Update blocks
+        const nextBlocks: any = { ...config.layout.blocks };
+        let nextLayers = config.layout.extraLayers;
+
+        for (const sid of startPos.multiIds) {
+          const snap = startPos.snapshots[sid];
+          if (!snap) continue;
+          const nx = Math.max(0, Math.min(snap.x + deltaX, CANVAS_WIDTH - snap.w));
+          const ny = Math.max(0, Math.min(snap.y + deltaY, CANVAS_HEIGHT - snap.h));
+
+          if (snap.isExtra) {
+            nextLayers = nextLayers.map(l => l.id === sid ? { ...l, x: nx, y: ny } : l);
+          } else {
+            if (nextBlocks[sid]) nextBlocks[sid] = { ...nextBlocks[sid], x: nx, y: ny };
+          }
+        }
+
+        updateConfig('layout.blocks', nextBlocks, false);
+        updateConfig('layout.extraLayers', nextLayers, false);
       } else {
-        updateConfig(`layout.blocks.${id}`, { x: newX, y: newY, w: newW, h: newH }, false);
+        if (isExtra) {
+          const newLayers = config.layout.extraLayers.map(l => l.id === id ? { ...l, x: newX, y: newY, w: newW, h: newH } : l);
+          updateConfig('layout.extraLayers', newLayers, false);
+        } else {
+          updateConfig(`layout.blocks.${id}`, { x: newX, y: newY, w: newW, h: newH }, false);
+        }
       }
     };
 
@@ -261,15 +290,40 @@ const DraggableBlock: React.FC<{
 
   return (
     <div
-      className={`absolute group select-none flex items-center justify-center ${config.layout.freeform ? 'cursor-move' : ''} ${isSelected ? 'ring-2 ring-indigo-600 ring-offset-2 shadow-2xl z-50' : ''}`}
+      className={`absolute group select-none flex items-center justify-center ${config.layout.freeform ? 'cursor-move' : ''} ${isPrimary ? 'ring-2 ring-indigo-600 ring-offset-2 shadow-2xl z-50' : isSelected ? 'ring-2 ring-blue-500 ring-offset-1 z-40' : ''}`}
       onMouseDown={(e) => {
         if (e.button !== 0 || isEditing) return;
         e.stopPropagation();
-        onSelect(id);
+
+        const alreadySelected = selectedIds.includes(id);
+        const mode: 'replace' | 'toggle' | 'add' | 'keep' = (e.ctrlKey || e.metaKey)
+          ? 'toggle'
+          : e.shiftKey
+            ? 'add'
+            : alreadySelected
+              ? 'keep'
+              : 'replace';
+
+        onSelect(id, mode);
+
         const target = e.target as HTMLElement;
         if (target.closest('.close-button') || target.closest('.resize-handle') || target.closest('.clickable-part')) return;
+
+        // Multi-drag: if the block is already part of a multi-selection, drag them all together.
+        const multiIds = (mode === 'keep' && alreadySelected && selectedIds.length > 1) ? selectedIds : [id];
+
+        const snapshots: Record<string, { x: number; y: number; w: number; h: number; isExtra: boolean }> = {};
+        for (const sid of multiIds) {
+          const ex = config.layout.extraLayers.find(l => l.id === sid);
+          if (ex) snapshots[sid] = { x: ex.x, y: ex.y, w: ex.w, h: ex.h, isExtra: true };
+          else {
+            const b = (config.layout.blocks as any)[sid];
+            if (b) snapshots[sid] = { x: b.x, y: b.y, w: b.w, h: b.h, isExtra: false };
+          }
+        }
+
         setIsDragging(true);
-        setStartPos({ x: e.clientX, y: e.clientY, blockX: block.x, blockY: block.y, blockW: block.w, blockH: block.h });
+        setStartPos({ x: e.clientX, y: e.clientY, blockX: block.x, blockY: block.y, blockW: block.w, blockH: block.h, multiIds, snapshots });
       }}
       onDoubleClick={(e) => {
         e.stopPropagation();
@@ -278,7 +332,7 @@ const DraggableBlock: React.FC<{
       onContextMenu={(e) => onContextMenu(e, id, isExtra)}
       style={{ left: block.x, top: block.y, width: block.w, height: block.h, zIndex: isDragging || resizeHandle ? 60 : 10 }}
     >
-      <div className={`relative w-full h-full flex items-center justify-center ${config.layout.freeform ? 'group-hover:ring-2 group-hover:ring-blue-500 group-hover:ring-offset-1' : ''}`}>
+      <div className={`relative w-full h-full flex items-center justify-center ${(!isSelected) ? 'group-hover:ring-2 group-hover:ring-blue-500 group-hover:ring-offset-1' : ''}`}>
         <div className={`w-full h-full flex items-center justify-center overflow-hidden`}>
           {children}
         </div>
@@ -304,7 +358,36 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<EditorTab>(EditorTab.SOURCE);
   const [config, setConfig] = useState<PDFConfig>(INITIAL_CONFIG);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [marquee, setMarquee] = useState<null | { x0: number; y0: number; x1: number; y1: number; additive: boolean }>(null);
+
+  const getGroupByMember = useCallback((id: string) => {
+    return config.layout.groups?.find(g => g.memberIds.includes(id)) || null;
+  }, [config.layout.groups]);
+
+  const selectElement = useCallback((id: string, mode: 'replace' | 'toggle' | 'add' | 'keep' = 'replace') => {
+    const group = getGroupByMember(id);
+    const groupIds = group ? group.memberIds : [id];
+
+    setSelectedId(id);
+    setSelectedIds(prev => {
+      if (mode === 'keep') return prev;
+      if (mode === 'replace') return groupIds;
+      if (mode === 'add') return Array.from(new Set([...prev, ...groupIds]));
+      // toggle
+      const allSelected = groupIds.every(gid => prev.includes(gid));
+      if (allSelected) return prev.filter(x => !groupIds.includes(x));
+      return Array.from(new Set([...prev, ...groupIds]));
+    });
+  }, [getGroupByMember]);
+
   const [editingId, setEditingId] = useState<string | null>(null);
+  const clearSelection = useCallback(() => {
+    setSelectedId(null);
+    setSelectedIds([]);
+    setEditingId(null);
+  }, []);
   const [snapLines, setSnapLines] = useState<{h: number[], v: number[]}>({ h: [], v: [] });
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [restoreModal, setRestoreModal] = useState(false);
@@ -365,9 +448,12 @@ const App: React.FC = () => {
 
   const [zoom, setZoom] = useState(0.65);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [hasUserPanned, setHasUserPanned] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [isSpaceDown, setIsSpaceDown] = useState(false);
   const lastMousePos = useRef({ x: 0, y: 0 });
+
+  const viewportRef = useRef<HTMLDivElement>(null);
 
   const [history, setHistory] = useState<PDFConfig[]>([INITIAL_CONFIG]);
   const [historyIndex, setHistoryIndex] = useState(0);
@@ -419,6 +505,25 @@ const App: React.FC = () => {
     document.documentElement.classList.toggle('ldd-dark', theme === 'dark');
     localStorage.setItem('lavender_theme', theme);
   }, [theme]);
+
+  // Keep the canvas centered until the user pans.
+  useEffect(() => {
+    if (hasUserPanned) return;
+    const el = viewportRef.current;
+    if (!el) return;
+
+    const center = () => {
+      const vw = el.clientWidth;
+      const vh = el.clientHeight;
+      const x = (vw - CANVAS_WIDTH * zoom) / 2;
+      const y = (vh - CANVAS_HEIGHT * zoom) / 2;
+      setOffset({ x, y });
+    };
+
+    center();
+    window.addEventListener('resize', center);
+    return () => window.removeEventListener('resize', center);
+  }, [zoom, hasUserPanned]);
 
   // Deselect only when the user clicks the empty canvas background.
   // (We intentionally do NOT deselect on clicks in the UI, so the top toolbar
@@ -697,31 +802,114 @@ const App: React.FC = () => {
         }
         break;
       case 'align-left':
-        if (id) {
-          if (isExtra) updateConfig('layout.extraLayers', config.layout.extraLayers.map(l => l.id === id ? { ...l, x: 0 } : l));
-          else updateConfig(`layout.blocks.${id}.x`, 0);
-        }
-        break;
       case 'align-center':
-        if (id) {
-          const b = isExtra ? config.layout.extraLayers.find(l => l.id === id) : config.layout.blocks[id];
-          if (b) {
-             const newX = (CANVAS_WIDTH - b.w) / 2;
-             if (isExtra) updateConfig('layout.extraLayers', config.layout.extraLayers.map(l => l.id === id ? { ...l, x: newX } : l));
-             else updateConfig(`layout.blocks.${id}.x`, newX);
-          }
-        }
-        break;
       case 'align-right':
-        if (id) {
-          const b = isExtra ? config.layout.extraLayers.find(l => l.id === id) : config.layout.blocks[id];
-          if (b) {
-             const newX = CANVAS_WIDTH - b.w;
-             if (isExtra) updateConfig('layout.extraLayers', config.layout.extraLayers.map(l => l.id === id ? { ...l, x: newX } : l));
-             else updateConfig(`layout.blocks.${id}.x`, newX);
+      case 'space-h':
+      case 'space-v': {
+        // Align / distribute works on the current multi-selection (or the clicked item).
+        const baseIds = (selectedIds && selectedIds.length) ? selectedIds : (id ? [id] : []);
+        if (!baseIds.length) break;
+
+        const groups = (config.layout.groups || []);
+        const groupByMember = new Map<string, { id: string; memberIds: string[] }>();
+        for (const g of groups) for (const mid of (g.memberIds || [])) groupByMember.set(mid, { id: g.id, memberIds: g.memberIds || [] });
+
+        const getRect = (rid: string) => {
+          const extra = config.layout.extraLayers.find(l => l.id === rid);
+          if (extra) return { x: extra.x, y: extra.y, w: extra.w, h: extra.h, isExtra: true };
+          const b = config.layout.blocks[rid];
+          if (b) return { x: b.x, y: b.y, w: b.w, h: b.h, isExtra: false };
+          return null;
+        };
+
+        // Coalesce selection into "units" so groups move/align as a single object.
+        type Unit = { unitId: string; memberIds: string[]; rect: { x: number; y: number; w: number; h: number } };
+        const unitsMap = new Map<string, Unit>();
+
+        for (const rid of baseIds) {
+          const g = groupByMember.get(rid);
+          if (g) {
+            if (!unitsMap.has(g.id)) {
+              const rects = (g.memberIds || []).map(getRect).filter(Boolean) as any[];
+              if (rects.length) {
+                const minX = Math.min(...rects.map(r => r.x));
+                const minY = Math.min(...rects.map(r => r.y));
+                const maxX = Math.max(...rects.map(r => r.x + r.w));
+                const maxY = Math.max(...rects.map(r => r.y + r.h));
+                unitsMap.set(g.id, { unitId: g.id, memberIds: [...g.memberIds], rect: { x: minX, y: minY, w: (maxX - minX), h: (maxY - minY) } });
+              }
+            }
+          } else {
+            const r = getRect(rid);
+            if (r) unitsMap.set(rid, { unitId: rid, memberIds: [rid], rect: { x: r.x, y: r.y, w: r.w, h: r.h } });
           }
         }
+
+        const units = Array.from(unitsMap.values());
+        if (!units.length) break;
+
+        const nextBlocks = JSON.parse(JSON.stringify(config.layout.blocks));
+        const nextExtras = config.layout.extraLayers.map(l => ({ ...l }));
+        const setPos = (rid: string, x: number, y: number) => {
+          const ix = nextExtras.findIndex(l => l.id === rid);
+          if (ix >= 0) { nextExtras[ix].x = x; nextExtras[ix].y = y; return; }
+          if (nextBlocks[rid]) { nextBlocks[rid].x = x; nextBlocks[rid].y = y; }
+        };
+        const moveMembers = (memberIds: string[], dx: number, dy: number) => {
+          for (const mid of memberIds) {
+            const r = getRect(mid);
+            if (!r) continue;
+            setPos(mid, r.x + dx, r.y + dy);
+          }
+        };
+
+        if (action === 'align-left' || action === 'align-center' || action === 'align-right') {
+          for (const u of units) {
+            const targetX = action === 'align-left'
+              ? 0
+              : action === 'align-center'
+                ? (CANVAS_WIDTH - u.rect.w) / 2
+                : (CANVAS_WIDTH - u.rect.w);
+            const dx = targetX - u.rect.x;
+            moveMembers(u.memberIds, dx, 0);
+          }
+        }
+
+        if (action === 'space-h') {
+          const sorted = units.slice().sort((a, b) => a.rect.x - b.rect.x);
+          if (sorted.length >= 2) {
+            const minX = Math.min(...sorted.map(u => u.rect.x));
+            const maxX = Math.max(...sorted.map(u => u.rect.x + u.rect.w));
+            const totalW = sorted.reduce((s, u) => s + u.rect.w, 0);
+            const gap = (maxX - minX - totalW) / (sorted.length - 1);
+            let cursor = minX;
+            for (const u of sorted) {
+              const dx = cursor - u.rect.x;
+              moveMembers(u.memberIds, dx, 0);
+              cursor += u.rect.w + gap;
+            }
+          }
+        }
+
+        if (action === 'space-v') {
+          const sorted = units.slice().sort((a, b) => a.rect.y - b.rect.y);
+          if (sorted.length >= 2) {
+            const minY = Math.min(...sorted.map(u => u.rect.y));
+            const maxY = Math.max(...sorted.map(u => u.rect.y + u.rect.h));
+            const totalH = sorted.reduce((s, u) => s + u.rect.h, 0);
+            const gap = (maxY - minY - totalH) / (sorted.length - 1);
+            let cursor = minY;
+            for (const u of sorted) {
+              const dy = cursor - u.rect.y;
+              moveMembers(u.memberIds, 0, dy);
+              cursor += u.rect.h + gap;
+            }
+          }
+        }
+
+        updateConfig('layout', { ...config.layout, blocks: nextBlocks, extraLayers: nextExtras });
         break;
+      }
       case 'font-inc':
         if (id) {
           if (isExtra) updateConfig('layout.extraLayers', config.layout.extraLayers.map(l => l.id === id ? { ...l, fontSize: l.fontSize + 2 } : l));
@@ -748,17 +936,44 @@ const App: React.FC = () => {
           if (item) setClipboard(JSON.parse(JSON.stringify(item)));
         }
         break;
+      case 'group':
+        if (selectedIds.length >= 2) {
+          const gid = `group-${Date.now()}`;
+          const nextGroups = [...(config.layout.groups || []), { id: gid, name: `Group`, memberIds: [...selectedIds] }];
+          updateConfig('layout.groups', nextGroups);
+        }
+        break;
+      case 'ungroup':
+        if (id) {
+          const g = getGroupByMember(id);
+          if (g) {
+            updateConfig('layout.groups', (config.layout.groups || []).filter(x => x.id !== g.id));
+          }
+        }
+        break;
       case 'delete':
-        if (id && !editingId) {
-          if (isExtra) updateConfig('layout.extraLayers', config.layout.extraLayers.filter(l => l.id !== id));
-          else updateConfig(`visibility.${id}`, false);
-          setSelectedId(null);
+        if (!editingId) {
+          const ids = selectedIds.length ? selectedIds : (id ? [id] : []);
+          if (ids.length) {
+            // Remove extras in one pass
+            const removeSet = new Set(ids);
+            const nextExtras = config.layout.extraLayers.filter(l => !removeSet.has(l.id));
+            if (nextExtras.length !== config.layout.extraLayers.length) updateConfig('layout.extraLayers', nextExtras);
+
+            // Hide built-in blocks
+            for (const bid of ids) {
+              if (!isExtraLayer(bid) && config.visibility[bid] !== undefined) {
+                updateConfig(`visibility.${bid}`, false, false);
+              }
+            }
+          }
+          clearSelection();
         }
         break;
     }
     setContextMenu(null);
     setAlignSubmenuOpen(false);
-  }, [config, contextMenu, selectedId, clipboard, editingId, isExtraLayer]);
+  }, [config, contextMenu, selectedId, selectedIds, clipboard, editingId, isExtraLayer, clearSelection, getGroupByMember]);
 
   useEffect(() => { 
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -783,9 +998,117 @@ const App: React.FC = () => {
   const undo = () => { if (historyIndex > 0) { const nextIdx = historyIndex - 1; setHistoryIndex(nextIdx); setConfig(history[nextIdx]); } };
   const redo = () => { if (historyIndex < history.length - 1) { const nextIdx = historyIndex + 1; setHistoryIndex(nextIdx); setConfig(history[nextIdx]); } };
   const handleScroll = (e: React.WheelEvent) => { const delta = e.deltaY; const zoomFactor = 1.05; const newZoom = delta > 0 ? zoom / zoomFactor : zoom * zoomFactor; setZoom(Math.max(0.1, Math.min(newZoom, 5))); };
-  const handleCanvasMouseDown = (e: React.MouseEvent) => { if (isSpaceDown || e.button === 1) { setIsPanning(true); lastMousePos.current = { x: e.clientX, y: e.clientY }; } };
-  const handleCanvasMouseMove = (e: React.MouseEvent) => { if (isPanning) { const dx = e.clientX - lastMousePos.current.x; const dy = e.clientY - lastMousePos.current.y; setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy })); lastMousePos.current = { x: e.clientX, y: e.clientY }; } };
+  const handleCanvasMouseDown = (e: React.MouseEvent) => {
+    if (isSpaceDown || e.button === 1) {
+      setIsPanning(true);
+      lastMousePos.current = { x: e.clientX, y: e.clientY };
+    }
+  };
+  const handleCanvasMouseMove = (e: React.MouseEvent) => {
+    if (isPanning) {
+      const dx = e.clientX - lastMousePos.current.x;
+      const dy = e.clientY - lastMousePos.current.y;
+      if (!hasUserPanned && (Math.abs(dx) + Math.abs(dy) > 0.5)) setHasUserPanned(true);
+      setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+      lastMousePos.current = { x: e.clientX, y: e.clientY };
+    }
+  };
   const handleCanvasMouseUp = () => setIsPanning(false);
+
+  const beginMarqueeFromClient = useCallback((clientX: number, clientY: number, additive: boolean) => {
+    const r = canvasRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const x = (clientX - r.left) / zoom;
+    const y = (clientY - r.top) / zoom;
+    const cx = Math.max(0, Math.min(x, CANVAS_WIDTH));
+    const cy = Math.max(0, Math.min(y, CANVAS_HEIGHT));
+    setMarquee({ x0: cx, y0: cy, x1: cx, y1: cy, additive });
+  }, [zoom]);
+
+  // marquee selection listeners
+  useEffect(() => {
+    if (!marquee) return;
+
+    const getCanvasPoint = (clientX: number, clientY: number) => {
+      const r = canvasRef.current?.getBoundingClientRect();
+      if (!r) return null;
+      const x = (clientX - r.left) / zoom;
+      const y = (clientY - r.top) / zoom;
+      return { x: Math.max(0, Math.min(x, CANVAS_WIDTH)), y: Math.max(0, Math.min(y, CANVAS_HEIGHT)) };
+    };
+
+    const rectIntersects = (a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }) => {
+      return !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
+    };
+
+    const onMove = (e: MouseEvent) => {
+      const pt = getCanvasPoint(e.clientX, e.clientY);
+      if (!pt) return;
+      setMarquee(m => (m ? { ...m, x1: pt.x, y1: pt.y } : m));
+    };
+
+    const onUp = (e: MouseEvent) => {
+      const pt = getCanvasPoint(e.clientX, e.clientY);
+      if (!pt) {
+        setMarquee(null);
+        return;
+      }
+
+      const sel = {
+        x: Math.min(marquee.x0, pt.x),
+        y: Math.min(marquee.y0, pt.y),
+        w: Math.abs(pt.x - marquee.x0),
+        h: Math.abs(pt.y - marquee.y0),
+      };
+
+      // Ignore micro-drags; treat as background click.
+      if (sel.w < 3 && sel.h < 3) {
+        if (!marquee.additive) clearSelection();
+        setMarquee(null);
+        return;
+      }
+
+      const hits: string[] = [];
+
+      // Blocks
+      for (const [id, b] of Object.entries(config.layout.blocks)) {
+        if (!config.visibility[id]) continue;
+        if (!b) continue;
+        if (rectIntersects({ x: b.x, y: b.y, w: b.w, h: b.h }, sel)) hits.push(id);
+      }
+
+      // Extras
+      for (const l of config.layout.extraLayers) {
+        if (!l.visible) continue;
+        if (rectIntersects({ x: l.x, y: l.y, w: l.w, h: l.h }, sel)) hits.push(l.id);
+      }
+
+      // Expand groups
+      const expanded = new Set(hits);
+      for (const hid of Array.from(expanded)) {
+        const g = getGroupByMember(hid);
+        if (g) g.memberIds.forEach(mid => expanded.add(mid));
+      }
+      const finalHits = Array.from(expanded);
+
+      setSelectedIds(prev => {
+        const base = marquee.additive ? prev : [];
+        const next = Array.from(new Set([...base, ...finalHits]));
+        return next;
+      });
+      if (finalHits.length) setSelectedId(finalHits[finalHits.length - 1]);
+      else if (!marquee.additive) setSelectedId(null);
+
+      setMarquee(null);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [marquee, zoom, config.layout.blocks, config.layout.extraLayers, config.visibility, clearSelection, getGroupByMember]);
 
   const closeContextMenu = useCallback(() => {
     setContextMenu(null);
@@ -1650,7 +1973,24 @@ const App: React.FC = () => {
         </button>
       )}
 
-      <div className={`flex-1 relative bg-slate-100 overflow-hidden flex items-center justify-center pt-16 ${isPanning ? 'cursor-grabbing' : 'cursor-auto'}`} onWheel={handleScroll} onMouseDown={handleCanvasMouseDown} onMouseMove={handleCanvasMouseMove} onMouseUp={handleCanvasMouseUp} onContextMenu={(e) => handleContextMenu(e, 'canvas', false)} onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }} onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleFileUpload(e as any, 'source'); }}>
+      <div
+        ref={viewportRef}
+        className={`flex-1 relative bg-slate-100 overflow-hidden pt-16 ${isPanning ? 'cursor-grabbing' : 'cursor-auto'}`}
+        onWheel={handleScroll}
+        onMouseDown={(e) => {
+          // Allow marquee selection even if the user starts the drag on the gray background
+          // around the page (Windows-style rubber band selection).
+          if (e.button === 0 && !isSpaceDown && e.target === e.currentTarget) {
+            beginMarqueeFromClient(e.clientX, e.clientY, !!(e.ctrlKey || e.metaKey));
+          }
+          handleCanvasMouseDown(e);
+        }}
+        onMouseMove={handleCanvasMouseMove}
+        onMouseUp={handleCanvasMouseUp}
+        onContextMenu={(e) => handleContextMenu(e, 'canvas', false)}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleFileUpload(e as any, 'source'); }}
+      >
         
         <div className="no-print absolute top-4 right-4 z-50">
           <button
@@ -1663,15 +2003,33 @@ const App: React.FC = () => {
           </button>
         </div>
         <div className="absolute inset-0 dashed-grid pointer-events-none opacity-50" />
-        <div id="pdf-canvas" className="relative bg-white shadow-2xl shrink-0 border-2 border-slate-200 transition-all duration-300" style={{ width: `${CANVAS_WIDTH}px`, height: `${CANVAS_HEIGHT}px`, backgroundColor: config.colors.background, transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: 'center' }} onClick={(e) => { if (e.target === e.currentTarget) { setSelectedId(null); setEditingId(null); } }}>
+        <div
+          id="pdf-canvas"
+          ref={canvasRef}
+          className="relative bg-white shadow-2xl shrink-0 border-2 border-slate-200 transition-all duration-300"
+          // NOTE: Marquee selection + hit testing assumes a top-left transform origin so
+          // that client->canvas coordinates can be mapped with a simple /zoom.
+          style={{ width: `${CANVAS_WIDTH}px`, height: `${CANVAS_HEIGHT}px`, backgroundColor: config.colors.background, transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: "top left" }}
+          onMouseDown={(e) => {
+            if (e.button !== 0 || isSpaceDown) return;
+            if (e.target !== e.currentTarget) return;
+            e.stopPropagation();
+            const r = canvasRef.current?.getBoundingClientRect();
+            if (!r) return;
+            const x = (e.clientX - r.left) / zoom;
+            const y = (e.clientY - r.top) / zoom;
+            setMarquee({ x0: x, y0: y, x1: x, y1: y, additive: !!(e.ctrlKey || e.metaKey) });
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) { clearSelection(); } }}
+        >
           {config.assets.watermark && config.visibility.watermark && (
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center overflow-hidden"><img src={config.assets.watermark} style={{ opacity: config.assets.watermarkOpacity, transform: 'rotate(-45deg) scale(2)' }} className="w-1/2 object-contain" /></div>
           )}
-          <DraggableBlock id="logo" config={config} updateConfig={updateConfig} visible={!!config.assets.logo && config.visibility.logo} onSelect={setSelectedId} isSelected={selectedId === 'logo'} onContextMenu={handleContextMenu} zoom={zoom}><img src={config.assets.logo!} className="w-full h-full object-contain pointer-events-none" /></DraggableBlock>
+          <DraggableBlock id="logo" config={config} updateConfig={updateConfig} visible={!!config.assets.logo && config.visibility.logo} onSelect={selectElement} selectedIds={selectedIds} isSelected={selectedIds.includes('logo')} isPrimary={selectedId === 'logo'} onContextMenu={handleContextMenu} zoom={zoom}><img src={config.assets.logo!} className="w-full h-full object-contain pointer-events-none" /></DraggableBlock>
           
           {/* STANDARD TEXT BLOCKS */}
           {['title', 'shortDesc', 'mainDesc', 'footer', 'socials'].map(blockId => (
-            <DraggableBlock key={blockId} id={blockId} config={config} updateConfig={updateConfig} visible={config.visibility[blockId]} onSnap={setSnapLines} onSelect={setSelectedId} onDoubleClick={() => setEditingId(blockId)} isSelected={selectedId === blockId} isEditing={editingId === blockId} onContextMenu={handleContextMenu} zoom={zoom}>
+            <DraggableBlock key={blockId} id={blockId} config={config} updateConfig={updateConfig} visible={config.visibility[blockId]} onSnap={setSnapLines} onSelect={selectElement} selectedIds={selectedIds} onDoubleClick={() => setEditingId(blockId)} isSelected={selectedIds.includes(blockId)} isPrimary={selectedId === blockId} isEditing={editingId === blockId} onContextMenu={handleContextMenu} zoom={zoom}>
               <div 
                 style={{ 
                   fontSize: `${config.fonts.blocks[blockId].size}px`, 
@@ -1711,10 +2069,10 @@ const App: React.FC = () => {
             </DraggableBlock>
           ))}
           
-          <DraggableBlock id="button" config={config} updateConfig={updateConfig} visible={config.visibility.button} onSnap={setSnapLines} onSelect={setSelectedId} isSelected={selectedId === 'button'} onContextMenu={handleContextMenu} zoom={zoom}><div style={{ backgroundColor: config.colors.button, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="rounded-3xl shadow-xl overflow-hidden text-center font-black"><span style={{ fontSize: `${Math.min(config.layout.blocks.button.h * 0.4, 30)}px`, color: config.colors.buttonText }} className="px-4">Download Now</span></div></DraggableBlock>
-          <DraggableBlock id="qr" config={config} updateConfig={updateConfig} visible={config.visibility.qr && !!config.source.link} onSnap={setSnapLines} onSelect={setSelectedId} isSelected={selectedId === 'qr'} onContextMenu={handleContextMenu} zoom={zoom}><img src={getQRUrl()} className="w-full h-full object-contain pointer-events-none" /></DraggableBlock>
+          <DraggableBlock id="button" config={config} updateConfig={updateConfig} visible={config.visibility.button} onSnap={setSnapLines} onSelect={selectElement} selectedIds={selectedIds} isSelected={selectedIds.includes('button')} isPrimary={selectedId === 'button'} onContextMenu={handleContextMenu} zoom={zoom}><div style={{ backgroundColor: config.colors.button, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="rounded-3xl shadow-xl overflow-hidden text-center font-black"><span style={{ fontSize: `${Math.min(config.layout.blocks.button.h * 0.4, 30)}px`, color: config.colors.buttonText }} className="px-4">Download Now</span></div></DraggableBlock>
+          <DraggableBlock id="qr" config={config} updateConfig={updateConfig} visible={config.visibility.qr && !!config.source.link} onSnap={setSnapLines} onSelect={selectElement} selectedIds={selectedIds} isSelected={selectedIds.includes('qr')} isPrimary={selectedId === 'qr'} onContextMenu={handleContextMenu} zoom={zoom}><img src={getQRUrl()} className="w-full h-full object-contain pointer-events-none" /></DraggableBlock>
           
-          <DraggableBlock id="promo" config={config} updateConfig={updateConfig} visible={config.visibility.promo && config.promo.enabled} onSnap={setSnapLines} onSelect={setSelectedId} isSelected={selectedId === 'promo'} onContextMenu={handleContextMenu} zoom={zoom}>
+          <DraggableBlock id="promo" config={config} updateConfig={updateConfig} visible={config.visibility.promo && config.promo.enabled} onSnap={setSnapLines} onSelect={selectElement} selectedIds={selectedIds} isSelected={selectedIds.includes('promo')} isPrimary={selectedId === 'promo'} onContextMenu={handleContextMenu} zoom={zoom}>
             <div 
               style={{ 
                 backgroundColor: (config.colors as any).promoBg ?? config.colors.accent, 
@@ -1733,7 +2091,7 @@ const App: React.FC = () => {
           </DraggableBlock>
 
           {config.layout.extraLayers.map(l => (
-            <DraggableBlock key={l.id} id={l.id} config={config} updateConfig={updateConfig} visible={l.visible} isExtra onSnap={setSnapLines} onSelect={setSelectedId} onDoubleClick={() => setEditingId(l.id)} isSelected={selectedId === l.id} isEditing={editingId === l.id} onContextMenu={handleContextMenu} zoom={zoom}>
+            <DraggableBlock key={l.id} id={l.id} config={config} updateConfig={updateConfig} visible={l.visible} isExtra onSnap={setSnapLines} onSelect={selectElement} selectedIds={selectedIds} onDoubleClick={() => setEditingId(l.id)} isSelected={selectedIds.includes(l.id)} isPrimary={selectedId === l.id} isEditing={editingId === l.id} onContextMenu={handleContextMenu} zoom={zoom}>
               {l.type === 'text' ? (
                 <div 
                   style={{ 
@@ -1757,6 +2115,17 @@ const App: React.FC = () => {
               )}
             </DraggableBlock>
           ))}
+          {marquee && (
+            <div
+              className="absolute z-[120] pointer-events-none border-2 border-indigo-500 bg-indigo-200/20"
+              style={{
+                left: Math.min(marquee.x0, marquee.x1),
+                top: Math.min(marquee.y0, marquee.y1),
+                width: Math.abs(marquee.x1 - marquee.x0),
+                height: Math.abs(marquee.y1 - marquee.y0)
+              }}
+            />
+          )}
           {snapLines.h.map((y, i) => <div key={`h-${i}`} className="absolute left-0 right-0 border-t-2 border-blue-500/50 z-[100] pointer-events-none" style={{ top: y }} />)}
           {snapLines.v.map((x, i) => <div key={`v-${i}`} className="absolute top-0 bottom-0 border-l-2 border-blue-500/50 z-[100] pointer-events-none" style={{ left: x }} />)}
         </div>
@@ -1830,6 +2199,27 @@ const App: React.FC = () => {
                   <Plus size={16} /> Duplicate
                 </button>
 
+                {selectedIds.length >= 2 && (
+                  <>
+                    <div className="h-px bg-slate-100 my-1" />
+                    <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Grouping</div>
+                    <button
+                      onClick={() => handleAction('group')}
+                      className="w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left text-slate-900 hover:bg-slate-50"
+                    >
+                      <Layers size={16} /> Group selection
+                    </button>
+                    {getGroupByMember(contextMenu.id) && (
+                      <button
+                        onClick={() => handleAction('ungroup')}
+                        className="w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left text-slate-900 hover:bg-slate-50"
+                      >
+                        <Layers size={16} /> Ungroup
+                      </button>
+                    )}
+                  </>
+                )}
+
                 <div className="h-px bg-slate-100 my-1" />
 
                 {/* GROUP: Align (submenu) */}
@@ -1889,6 +2279,20 @@ const App: React.FC = () => {
                           className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
                         >
                           <AlignRight size={16} /> Right
+                        </button>
+                        <div className="h-px bg-slate-100 my-1" />
+                        <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Spacing</div>
+                        <button
+                          onClick={() => handleAction('space-h')}
+                          className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                        >
+                          <AlignJustify size={16} /> Distribute Horizontally
+                        </button>
+                        <button
+                          onClick={() => handleAction('space-v')}
+                          className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                        >
+                          <AlignJustify size={16} className="rotate-90" /> Distribute Vertically
                         </button>
                       </div>
                     </div>

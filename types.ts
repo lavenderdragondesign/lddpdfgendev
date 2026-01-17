@@ -37,6 +37,12 @@ export interface BlockLayout {
   h: number;
 }
 
+export interface GroupLayout {
+  id: string;
+  name: string;
+  memberIds: string[];
+}
+
 export interface ExtraLayer {
   id: string;
   type: 'text' | 'image' | 'button';
@@ -146,6 +152,7 @@ export interface PDFConfig {
     freeform: boolean;
     snap: boolean;
     guides: boolean;
+    groups: GroupLayout[];
     qr: boolean;
     blocks: {
       [key: string]: BlockLayout;
