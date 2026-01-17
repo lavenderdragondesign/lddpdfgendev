@@ -1126,10 +1126,7 @@ const App: React.FC = () => {
               </>
             )}
             
-            <div className="flex-1 flex justify-end gap-2">
-              <button onClick={() => handleAction('align-center')} className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[10px] font-black uppercase hover:bg-indigo-50 hover:text-indigo-600 transition-all">Snap Center X</button>
-              <button onClick={() => handleAction('duplicate')} className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[10px] font-black uppercase hover:bg-indigo-50 hover:text-indigo-600 transition-all">Duplicate</button>
-            </div>
+
           </div>
         )}
       </div>
