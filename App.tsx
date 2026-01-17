@@ -99,6 +99,83 @@ const INITIAL_CONFIG: PDFConfig = {
 
 const FONT_FAMILIES = ['Inter', 'Arial', 'Verdana', 'Georgia', 'Times New Roman', 'Courier New'];
 
+
+// --- Text box auto-fit helpers (prevents cut-off on load) ---
+function measureTextBox(text: string, font: string, maxWidth: number, padding = 16, lineHeightMult = 1.25) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+  ctx.font = font;
+
+  const rawLines = (text || '').split('\n');
+  const lines: string[] = [];
+
+  for (const raw of rawLines) {
+    const words = raw.split(' ');
+    let line = '';
+    for (const w of words) {
+      const test = line ? `${line} ${w}` : w;
+      if (ctx.measureText(test).width > Math.max(1, maxWidth - padding * 2) && line) {
+        lines.push(line);
+        line = w;
+      } else {
+        line = test;
+      }
+    }
+    lines.push(line);
+  }
+
+  let widest = 0;
+  for (const l of lines) widest = Math.max(widest, ctx.measureText(l).width);
+
+  // baseline-safe line height
+  const fontSizeMatch = /\b(\d+(?:\.\d+)?)px\b/.exec(font);
+  const fontSize = fontSizeMatch ? parseFloat(fontSizeMatch[1]) : 14;
+  const lineHeight = fontSize * lineHeightMult;
+
+  const height = Math.ceil(lines.length * lineHeight + padding * 2);
+  const width = Math.ceil(widest + padding * 2);
+
+  return { width, height, lineCount: lines.length };
+}
+
+function autoFitStandardTextBlocks(cfg: PDFConfig): PDFConfig {
+  const next = JSON.parse(JSON.stringify(cfg)) as PDFConfig;
+
+  const MIN_W: Record<string, number> = {
+    title: 420, shortDesc: 380, mainDesc: 520, footer: 420, promo: 560, socials: 520
+  };
+  const MIN_H: Record<string, number> = {
+    title: 80, shortDesc: 70, mainDesc: 160, footer: 60, promo: 170, socials: 70
+  };
+
+  const blocks = ['title','shortDesc','mainDesc','footer','promo','socials'] as const;
+
+  for (const id of blocks) {
+    const b = (next.layout.blocks as any)[id];
+    const f = (next.fonts.blocks as any)[id];
+    if (!b || !f) continue;
+
+    const weight = f.bold ? 800 : 600;
+    const style = f.italic ? 'italic' : 'normal';
+    const font = `${style} ${weight} ${f.size}px ${f.family || next.fonts.global || 'Inter'}`;
+
+    const text =
+      id === 'promo'
+        ? `${next.promo.title || ''}\n${next.promo.code || ''}\n${next.promo.description || ''}${next.promo.expiry ? `\n${next.promo.expiry}` : ''}`
+        : ((next.content as any)[id] || '');
+
+    const minW = MIN_W[id] ?? 360;
+    const minH = MIN_H[id] ?? 80;
+
+    // Expand width/height just enough so the loaded project doesn't look "cut off".
+    const measured = measureTextBox(text, font, Math.max(b.w || 1, minW), 16, 1.25);
+    b.w = Math.max(b.w || 0, measured.width, minW);
+    b.h = Math.max(b.h || 0, measured.height, minH);
+  }
+
+  return next;
+}
+
 const DraggableBlock: React.FC<{
   id: string;
   config: PDFConfig;
@@ -253,6 +330,7 @@ const App: React.FC = () => {
 
   // Appearance
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('lavender_theme') as any) || 'light');
+    const effectiveConfig = exportConfigRef.current || config;
 
   const [zoom, setZoom] = useState(0.65);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -284,6 +362,9 @@ const App: React.FC = () => {
     const savedWork = localStorage.getItem('lavender_autosave');
     if (savedWork && !skipRestore) setRestoreModal(true);
   }, []);
+
+  // Ensure text blocks don't load with tiny boxes that clip content.
+  useEffect(() => { setConfig(prev => autoFitStandardTextBlocks(prev)); }, []);
 
   // Auto-save logic
 
@@ -441,6 +522,7 @@ const App: React.FC = () => {
       } catch (err) {
         console.error("PDF operation failed", err);
       } finally {
+      exportConfigRef.current = null;
         setIsExtracting(false);
       }
       return;
@@ -482,6 +564,7 @@ const App: React.FC = () => {
         setAiError(err?.message || 'AI request failed');
       }
     } finally {
+      exportConfigRef.current = null;
       setAiBusy(false);
     }
   }, [config.content, ensureGeminiKey, updateConfig]);
@@ -684,8 +767,73 @@ const App: React.FC = () => {
     ].filter(s => !!s.link);
   }, [config.socials]);
 
+
+  const validateBeforeExport = (cfg: PDFConfig) => {
+    const warnings: string[] = [];
+
+    // Link sanity
+    const hasMdFile = cfg.source?.mode === 'upload' && !!cfg.source?.fileName;
+    const link = (cfg.source?.link || '').trim();
+    if (!hasMdFile && !link) warnings.push("No download link detected. Upload your MyDesigns Download.pdf or paste a link.");
+
+    // Basic text overflow check (approx)
+    const ids = ['title','shortDesc','mainDesc','footer','socials'] as const;
+    for (const id of ids) {
+      if (!(cfg.visibility as any)[id]) continue;
+      const b = (cfg.layout.blocks as any)[id];
+      const f = (cfg.fonts.blocks as any)[id];
+      if (!b || !f) continue;
+      const weight = f.bold ? 800 : 600;
+      const style = f.italic ? 'italic' : 'normal';
+      const font = `${style} ${weight} ${f.size}px ${f.family || cfg.fonts.global || 'Inter'}`;
+      const t = ((cfg.content as any)[id] || '').toString();
+      const measured = measureTextBox(t, font, b.w || 1, 16, 1.25);
+      if (measured.height > (b.h || 0)) warnings.push(`“${id}” may overflow (box is too short). Try making the text box taller.`);
+    }
+
+    // Promo overflow check
+    if (cfg.visibility.promo && cfg.promo?.enabled) {
+      const b = (cfg.layout.blocks as any).promo;
+      const f = (cfg.fonts.blocks as any).promo;
+      if (b && f) {
+        const weight = f.bold ? 800 : 600;
+        const style = f.italic ? 'italic' : 'normal';
+        const font = `${style} ${weight} ${f.size}px ${f.family || cfg.fonts.global || 'Inter'}`;
+        const t = `${cfg.promo.title || ''}\n${cfg.promo.code || ''}\n${cfg.promo.description || ''}${cfg.promo.expiry ? `\n${cfg.promo.expiry}` : ''}`;
+        const measured = measureTextBox(t, font, b.w || 1, 16, 1.25);
+        if (measured.height > (b.h || 0)) warnings.push("Promo text may overflow. Make the promo box taller or reduce font size.");
+      }
+    }
+
+    return warnings;
+  };
+
+  const [exportWarnings, setExportWarnings] = useState<string[] | null>(null);
+  const [dontShowExportWarnings, setDontShowExportWarnings] = useState<boolean>(() => localStorage.getItem('ldd_hide_export_warnings') === '1');
+  const [bypassWarnings, setBypassWarnings] = useState(false);
+  const [pendingPreviewExport, setPendingPreviewExport] = useState<boolean | null>(null);
+
   const handleExportPDF = async (preview: boolean) => {
+    if (!bypassWarnings) {
+      const warnings = dontShowExportWarnings ? [] : validateBeforeExport(config);
+      if (warnings.length) {
+      setExportWarnings(warnings);
+        setPendingPreviewExport(preview);
+        return;
+      }
+    }
+    if (bypassWarnings) setBypassWarnings(false);
+
+
     const canvas = document.getElementById('pdf-canvas');
+    // Resolve simple tokens for export without mutating the live editor state.
+    const exportConfig: PDFConfig = JSON.parse(JSON.stringify(config));
+    exportConfigRef.current = exportConfig;
+    (['title','shortDesc','mainDesc','footer'] as const).forEach(k => { (exportConfig.content as any)[k] = [k], exportConfig); });
+    exportConfig.promo.title = ;
+    exportConfig.promo.code = ;
+    exportConfig.promo.description = ;
+
     if (!canvas) return;
     const originalTransform = canvas.style.transform;
     canvas.style.transform = 'scale(1)';
@@ -1162,7 +1310,73 @@ const App: React.FC = () => {
         </div>
       )}
 
+
+      {/* Export warnings modal */}
+      {exportWarnings && (
+        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] p-7 max-w-lg w-full shadow-2xl border border-slate-100">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center shrink-0">
+                <Info className="text-amber-700" size={24} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-black text-slate-900">Export Warnings</h3>
+                <p className="text-xs text-slate-600 mt-1">You can still export, but these items might cause clipping or broken links.</p>
+              </div>
+              <button onClick={() => { setExportWarnings(null); setPendingPreviewExport(null); }} className="p-2 rounded-xl hover:bg-slate-100">
+                <X size={18} />
+              </button>
+            </div>
+
+            <ul className="mt-4 space-y-2 text-sm">
+              {exportWarnings.map((w, i) => (
+                <li key={i} className="flex gap-2 items-start">
+                  <span className="mt-0.5 w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                  <span className="text-slate-700">{w}</span>
+                </li>
+              ))}
+            </ul>
+
+            
+            <div className="flex items-center gap-2 mt-4 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={dontShowExportWarnings}
+                onChange={(e) => {
+                  setDontShowExportWarnings(e.target.checked);
+                  localStorage.setItem('ldd_hide_export_warnings', e.target.checked ? '1' : '0');
+                }}
+              />
+              <span>Don’t show export warnings again</span>
+            </div>
+
+            <div className="flex gap-3 mt-6 justify-end">
+        
+              <button
+                onClick={() => { setExportWarnings(null); setPendingPreviewExport(null); }}
+                className="px-4 py-2 rounded-xl font-black text-xs border border-slate-200 hover:bg-slate-50"
+              >
+                Fix It
+              </button>
+              <button
+                onClick={() => {
+                  const p = pendingPreviewExport ?? false;
+                  setExportWarnings(null);
+                  setPendingPreviewExport(null);
+                  setBypassWarnings(true);
+                  setTimeout(() => { handleExportPDF(p); }, 0);
+                }}
+                className="px-4 py-2 rounded-xl font-black text-xs bg-amber-600 text-white hover:bg-amber-700 shadow-lg shadow-amber-100"
+              >
+                Export Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* API Key Required Popup */}
+
       {needsApiKey && (
         <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
           <div className="bg-white rounded-[28px] p-7 max-w-md w-full shadow-2xl border border-slate-100">
