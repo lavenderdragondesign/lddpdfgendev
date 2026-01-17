@@ -13,20 +13,9 @@ interface CanvasProps {
 }
 
 export function Canvas({ data, selectedElement, onSelectElement, onPositionChange, canvasRef }: CanvasProps) {
-
-  // Only deselect when the user clicks the empty canvas background.
-  // Clicking UI controls/toolbars inside the canvas should NOT clear selection.
-  const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLElement | null;
-    if (!target) return;
-
-    // If the click happened on (or inside) a UI-only element (e.g., toolbars/buttons), don't deselect.
-    if (target.closest('[data-ui], [data-ui-only], [data-toolbar], [data-export-hide]')) return;
-
-    // Only clear selection when clicking directly on the canvas background.
-    if (e.currentTarget === target) {
-      onSelectElement(null);
-    }
+  
+  const handleCanvasClick = () => {
+    onSelectElement(null);
   };
 
   const renderWatermark = () => {
