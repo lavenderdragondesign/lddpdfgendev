@@ -1,0 +1,54 @@
+/* LavenderDragonDesign PDF Generator - Theme Overrides */
+
+/* Default (light) is defined inline in index.html */
+
+/* Dark mode is enabled by toggling 'ldd-dark' on <html> */
+.ldd-dark body {
+  background-color: #0b1220 !important;
+  color: #e2e8f0 !important;
+}
+
+/* Keep the printable canvas white even in dark mode */
+.ldd-dark #pdf-canvas {
+  background-color: #ffffff !important;
+}
+
+/* Darken UI chrome only (everything marked .no-print) */
+.ldd-dark .no-print {
+  color: #e2e8f0;
+}
+
+.ldd-dark .no-print.bg-white,
+.ldd-dark .no-print .bg-white {
+  background-color: #0f172a !important;
+}
+
+.ldd-dark .no-print.bg-slate-50,
+.ldd-dark .no-print .bg-slate-50 {
+  background-color: #111827 !important;
+}
+
+.ldd-dark .no-print .text-slate-900 { color: #f1f5f9 !important; }
+.ldd-dark .no-print .text-slate-700 { color: #cbd5e1 !important; }
+.ldd-dark .no-print .text-slate-600 { color: #cbd5e1 !important; }
+.ldd-dark .no-print .text-slate-500 { color: #94a3b8 !important; }
+.ldd-dark .no-print .text-slate-400 { color: #94a3b8 !important; }
+
+.ldd-dark .no-print.border-slate-100,
+.ldd-dark .no-print .border-slate-100 { border-color: #1f2937 !important; }
+.ldd-dark .no-print.border-slate-200,
+.ldd-dark .no-print .border-slate-200 { border-color: #1f2937 !important; }
+.ldd-dark .no-print.border-slate-50,
+.ldd-dark .no-print .border-slate-50 { border-color: #1f2937 !important; }
+
+/* Inputs and buttons */
+.ldd-dark .no-print input,
+.ldd-dark .no-print textarea {
+  background-color: #0b1220 !important;
+  border-color: #1f2937 !important;
+  color: #e2e8f0 !important;
+}
+
+.ldd-dark .no-print button {
+  color: inherit;
+}
