@@ -308,19 +308,9 @@ const App: React.FC = () => {
     localStorage.setItem('lavender_theme', theme);
   }, [theme]);
 
-  // Click anywhere outside the canvas to deselect the currently selected block
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      const canvas = document.getElementById('pdf-canvas');
-      if (!canvas) return;
-      if (!canvas.contains(e.target as Node)) {
-        setSelectedId(null);
-        setEditingId(null);
-      }
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, []);
+  // Deselect only when the user clicks the empty canvas background.
+  // (We intentionally do NOT deselect on clicks in the UI, so the top toolbar
+  // doesn't disappear when you interact with it.)
 
 
   const persistGeminiKey = useCallback(() => {
@@ -1126,7 +1116,7 @@ const App: React.FC = () => {
               </>
             )}
             
-
+            <div className="flex-1" />
           </div>
         )}
       </div>
@@ -1391,7 +1381,7 @@ const App: React.FC = () => {
           </button>
         </div>
         <div className="absolute inset-0 dashed-grid pointer-events-none opacity-50" />
-        <div id="pdf-canvas" className="relative bg-white shadow-2xl shrink-0 border-2 border-slate-200 transition-all duration-300" style={{ width: `${CANVAS_WIDTH}px`, height: `${CANVAS_HEIGHT}px`, backgroundColor: config.colors.background, transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: 'center' }} onClick={(e) => { if (e.target === e.currentTarget) setSelectedId(null); }}>
+        <div id="pdf-canvas" className="relative bg-white shadow-2xl shrink-0 border-2 border-slate-200 transition-all duration-300" style={{ width: `${CANVAS_WIDTH}px`, height: `${CANVAS_HEIGHT}px`, backgroundColor: config.colors.background, transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`, transformOrigin: 'center' }} onClick={(e) => { if (e.target === e.currentTarget) { setSelectedId(null); setEditingId(null); } }}>
           {config.assets.watermark && config.visibility.watermark && (
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center overflow-hidden"><img src={config.assets.watermark} style={{ opacity: config.assets.watermarkOpacity, transform: 'rotate(-45deg) scale(2)' }} className="w-1/2 object-contain" /></div>
           )}
