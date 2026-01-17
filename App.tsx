@@ -311,7 +311,17 @@ const App: React.FC = () => {
   const [dontShowAgain, setDontShowAgain] = useState(false);
   const [isTipsMinimized, setIsTipsMinimized] = useState(true);
   const [isSidebarMinimized, setIsSidebarMinimized] = useState(false);
-  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, id: string, isExtra: boolean } | null>(null);
+  const [contextMenu, setContextMenu] = useState<null | {
+    id: string;
+    isExtra: boolean;
+    anchorX: number;
+    anchorY: number;
+    openUp: boolean;
+    left: number;
+    top?: number;
+    bottom?: number;
+  }>(null);
+  const [alignSubmenuOpen, setAlignSubmenuOpen] = useState(false);
   const [clipboard, setClipboard] = useState<any>(null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [savedPresets, setSavedPresets] = useState<{name: string, config: PDFConfig}[]>(() => {
@@ -723,6 +733,7 @@ const App: React.FC = () => {
         break;
     }
     setContextMenu(null);
+    setAlignSubmenuOpen(false);
   }, [config, contextMenu, selectedId, clipboard, editingId, isExtraLayer]);
 
   useEffect(() => { 
@@ -751,7 +762,46 @@ const App: React.FC = () => {
   const handleCanvasMouseDown = (e: React.MouseEvent) => { if (isSpaceDown || e.button === 1) { setIsPanning(true); lastMousePos.current = { x: e.clientX, y: e.clientY }; } };
   const handleCanvasMouseMove = (e: React.MouseEvent) => { if (isPanning) { const dx = e.clientX - lastMousePos.current.x; const dy = e.clientY - lastMousePos.current.y; setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy })); lastMousePos.current = { x: e.clientX, y: e.clientY }; } };
   const handleCanvasMouseUp = () => setIsPanning(false);
-  const handleContextMenu = useCallback((e: React.MouseEvent, id: string, isExtra: boolean) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, id, isExtra }); }, []);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+    setAlignSubmenuOpen(false);
+  }, []);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent, id: string, isExtra: boolean) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setAlignSubmenuOpen(false);
+
+    const PAD = 10;
+    const MENU_W = 256;
+    const MENU_H = id === 'canvas' ? 150 : 250; // estimated; we clamp just in case
+
+    const anchorX = e.clientX;
+    const anchorY = e.clientY;
+
+    // Horizontal clamp
+    let left = anchorX;
+    left = Math.min(left, window.innerWidth - MENU_W - PAD);
+    left = Math.max(PAD, left);
+
+    // Vertical flip + clamp
+    const spaceBelow = window.innerHeight - anchorY;
+    const openUp = spaceBelow < MENU_H + PAD;
+
+    if (openUp) {
+      let bottom = window.innerHeight - anchorY;
+      // keep within top padding too
+      bottom = Math.min(bottom, window.innerHeight - PAD - MENU_H);
+      bottom = Math.max(PAD, bottom);
+      setContextMenu({ id, isExtra, anchorX, anchorY, openUp, left, bottom });
+    } else {
+      let top = anchorY;
+      top = Math.min(top, window.innerHeight - PAD - MENU_H);
+      top = Math.max(PAD, top);
+      setContextMenu({ id, isExtra, anchorX, anchorY, openUp, left, top });
+    }
+  }, []);
 
   const hexNoHash = (hex: string) => (hex || '').replace('#','').trim() || '475569';
 
@@ -1698,13 +1748,159 @@ const App: React.FC = () => {
       </div>
 
       {contextMenu && (
-        <div className="fixed z-[200] bg-white border-2 border-slate-200 shadow-2xl rounded-2xl py-2 w-64 overflow-hidden animate-in zoom-in-95 duration-100" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
-          {contextMenu.id !== 'canvas' ? (
-            <><button onClick={() => handleAction('copy')} className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"><Copy size={16}/> Copy</button><button onClick={() => handleAction('duplicate')} className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"><Plus size={16}/> Duplicate</button><div className="h-px bg-slate-100 my-1" /><button onClick={() => handleAction('align-center')} className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"><AlignCenter size={16}/> Center X</button><div className="h-px bg-slate-100 my-1" /><button onClick={() => handleAction('delete')} className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-red-600 text-left"><Trash2 size={16}/> Remove</button></>
-          ) : (
-            <><button onClick={() => handleAction('paste')} disabled={!clipboard} className={`w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-left ${clipboard ? 'text-slate-900' : 'text-slate-300'}`}><Clipboard size={16}/> Paste</button><div className="h-px bg-slate-100 my-1" /><button onClick={() => { setActiveTab(EditorTab.ASSETS); setContextMenu(null); }} className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"><Layers size={16}/> Layers Library</button></>
-          )}
-        </div>
+        <>
+          {/* Backdrop: click anywhere outside to close (also prevents "can't click" issues from underlying handlers) */}
+          <div
+            className="fixed inset-0 z-[190]"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              closeContextMenu();
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              closeContextMenu();
+            }}
+          />
+
+          <div
+            className="fixed z-[200]"
+            style={{
+              left: contextMenu.left,
+              top: contextMenu.openUp ? undefined : contextMenu.top,
+              bottom: contextMenu.openUp ? contextMenu.bottom : undefined,
+              width: 256,
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              closeContextMenu();
+            }}
+          >
+            {/* Main menu */}
+            <div className="relative bg-white border-2 border-slate-200 shadow-2xl rounded-2xl py-2 overflow-hidden animate-in zoom-in-95 duration-100">
+            {contextMenu.id !== 'canvas' ? (
+              <>
+                {/* GROUP: Clipboard */}
+                <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Clipboard</div>
+                <button
+                  onClick={() => handleAction('copy')}
+                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                >
+                  <Copy size={16} /> Copy
+                </button>
+                <button
+                  onClick={() => handleAction('duplicate')}
+                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                >
+                  <Plus size={16} /> Duplicate
+                </button>
+
+                <div className="h-px bg-slate-100 my-1" />
+
+                {/* GROUP: Align (submenu) */}
+                <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Align</div>
+
+                <div
+                  className="group relative"
+                  onMouseEnter={() => setAlignSubmenuOpen(true)}
+                  onMouseLeave={() => setAlignSubmenuOpen(false)}
+                >
+                  <button
+                    className="w-full px-6 py-3 hover:bg-slate-50 flex items-center justify-between text-xs font-black text-slate-900 text-left"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setAlignSubmenuOpen((v) => !v);
+                    }}
+                  >
+                    <span className="flex items-center gap-4"><AlignCenter size={16} /> Align</span>
+                    <span className="text-slate-400 text-sm">›</span>
+                  </button>
+
+                  {/* Align submenu */}
+                  {alignSubmenuOpen && (
+                    <div
+                      className="absolute top-0"
+                      style={(() => {
+                        const SUB_W = 240;
+                        const PAD = 10;
+                        const menuLeft = contextMenu.left;
+                        const openLeft = menuLeft + 256 + SUB_W + PAD > window.innerWidth;
+                        const sideStyle: React.CSSProperties = openLeft
+                          ? { right: 256 + 8 }
+                          : { left: 256 + 8 };
+
+                        // If the main menu is flipped up, the submenu should still stay on-screen.
+                        // We'll anchor it to the top of the Align row; clamp happens via viewport overflow hidden-ish positioning.
+                        return { ...sideStyle };
+                      })()}
+                    >
+                      <div className="bg-white border-2 border-slate-200 shadow-2xl rounded-2xl py-2 overflow-hidden" style={{ width: 240 }}>
+                        <button
+                          onClick={() => handleAction('align-left')}
+                          className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                        >
+                          <AlignLeft size={16} /> Left
+                        </button>
+                        <button
+                          onClick={() => handleAction('align-center')}
+                          className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                        >
+                          <AlignCenter size={16} /> Center
+                        </button>
+                        <button
+                          onClick={() => handleAction('align-right')}
+                          className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                        >
+                          <AlignRight size={16} /> Right
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="h-px bg-slate-100 my-1" />
+
+                {/* GROUP: Edit */}
+                <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Edit</div>
+                <button
+                  onClick={() => handleAction('delete')}
+                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-red-600 text-left"
+                >
+                  <Trash2 size={16} /> Remove
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Canvas</div>
+                <button
+                  onClick={() => handleAction('paste')}
+                  disabled={!clipboard}
+                  className={`w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-left ${clipboard ? 'text-slate-900' : 'text-slate-300'}`}
+                >
+                  <Clipboard size={16} /> Paste
+                </button>
+                <div className="h-px bg-slate-100 my-1" />
+                <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Browse</div>
+                <button
+                  onClick={() => {
+                    setActiveTab(EditorTab.ASSETS);
+                    setContextMenu(null);
+                    setAlignSubmenuOpen(false);
+                  }}
+                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                >
+                  <Layers size={16} /> Layers Library
+                </button>
+              </>
+            )}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
