@@ -30,10 +30,11 @@ const INITIAL_CONFIG: PDFConfig = {
   source: { mode: 'upload', link: '', fileName: null },
   assets: { logo: null, watermark: null, watermarkOpacity: 0.1 },
   content: {
-    title: 'Your Digital Download',
+    title: 'Your Digital Files Are Ready',
     shortDesc: 'Thank you for your purchase!',
-    mainDesc: 'Click the download button below to access your files. Save this page for future reference.',
-    footer: '© 2025 Your Store Name. All rights reserved.',
+    mainDesc: 'Click the button below to access your digital files.
+We recommend saving this page so you can return anytime.',
+    footer: '© 2026 Your Store Name. All rights reserved.',
     twoColumns: false,
   },
   fonts: {
