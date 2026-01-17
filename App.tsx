@@ -639,9 +639,10 @@ const App: React.FC = () => {
 
   const handleAction = useCallback((action: string) => {
     const id = contextMenu?.id || selectedId;
-    // Built-in download button should not be copyable/duplicable.
-    // (Prevents accidental extra buttons and export weirdness.)
-    if ((action === 'duplicate' || action === 'copy') && id === 'button') return;
+    // Built-in blocks that should NOT be copyable/duplicable.
+    // (Prevents accidental extra blocks and export weirdness.)
+    const isNonCopyableBlock = id === 'button' || id === 'promo';
+    if ((action === 'duplicate' || action === 'copy') && isNonCopyableBlock) return;
 
     const isExtra = contextMenu?.isExtra || isExtraLayer(selectedId);
 
@@ -1812,15 +1813,15 @@ const App: React.FC = () => {
                 <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Clipboard</div>
                 <button
                   onClick={() => handleAction('copy')}
-                  disabled={contextMenu.id === 'button'}
-                  className={`w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left ${contextMenu.id === 'button' ? 'text-slate-300 cursor-not-allowed' : 'text-slate-900 hover:bg-slate-50'}`}
+                  disabled={contextMenu.id === 'button' || contextMenu.id === 'promo'}
+                  className={`w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left ${(contextMenu.id === 'button' || contextMenu.id === 'promo') ? 'text-slate-300 cursor-not-allowed' : 'text-slate-900 hover:bg-slate-50'}`}
                 >
                   <Copy size={16} /> Copy
                 </button>
                 <button
                   onClick={() => handleAction('duplicate')}
-                  disabled={contextMenu.id === 'button'}
-                  className={`w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left ${contextMenu.id === 'button' ? 'text-slate-300 cursor-not-allowed' : 'text-slate-900 hover:bg-slate-50'}`}
+                  disabled={contextMenu.id === 'button' || contextMenu.id === 'promo'}
+                  className={`w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left ${(contextMenu.id === 'button' || contextMenu.id === 'promo') ? 'text-slate-300 cursor-not-allowed' : 'text-slate-900 hover:bg-slate-50'}`}
                 >
                   <Plus size={16} /> Duplicate
                 </button>
