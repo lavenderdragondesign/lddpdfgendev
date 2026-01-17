@@ -32,8 +32,7 @@ const INITIAL_CONFIG: PDFConfig = {
   content: {
     title: 'Your Digital Files Are Ready',
     shortDesc: 'Thank you for your purchase!',
-    mainDesc: 'Click the button below to access your digital files.
-We recommend saving this page so you can return anytime.',
+    mainDesc: 'Click the button below to access your digital files. We recommend saving this page so you can return anytime.',
     footer: '© 2026 Your Store Name. All rights reserved.',
     twoColumns: false,
   },
