@@ -40,8 +40,8 @@ const INITIAL_CONFIG: PDFConfig = {
     global: 'Inter',
     blocks: {
       title: { family: 'Inter', size: 36, align: 'center', color: '#0f172a', bold: true },
-      shortDesc: { family: 'Inter', size: 18, align: 'center', color: '#334155' },
-      mainDesc: { family: 'Inter', size: 14, align: 'center', color: '#475569' },
+      shortDesc: { family: 'Inter', size: 30, align: 'center', color: '#334155' },
+      mainDesc: { family: 'Inter', size: 30, align: 'center', color: '#475569' },
       footer: { family: 'Inter', size: 10, align: 'center', color: '#94a3b8' },
       promo: { family: 'Inter', size: 18, align: 'center', color: '#ffffff', bold: true },
       socials: { family: 'Inter', size: 12, align: 'center', color: '#475569' },
