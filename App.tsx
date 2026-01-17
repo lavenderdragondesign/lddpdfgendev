@@ -330,7 +330,7 @@ const App: React.FC = () => {
 
   // Appearance
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('lavender_theme') as any) || 'light');
-    const effectiveConfig = exportConfigRef.current || config;
+  const effectiveConfig = config;
 
   const [zoom, setZoom] = useState(0.65);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -522,7 +522,6 @@ const App: React.FC = () => {
       } catch (err) {
         console.error("PDF operation failed", err);
       } finally {
-      exportConfigRef.current = null;
         setIsExtracting(false);
       }
       return;
@@ -564,7 +563,6 @@ const App: React.FC = () => {
         setAiError(err?.message || 'AI request failed');
       }
     } finally {
-      exportConfigRef.current = null;
       setAiBusy(false);
     }
   }, [config.content, ensureGeminiKey, updateConfig]);
@@ -809,8 +807,8 @@ const App: React.FC = () => {
   };
 
   const [exportWarnings, setExportWarnings] = useState<string[] | null>(null);
-  const [dontShowExportWarnings, setDontShowExportWarnings] = useState<boolean>(() => localStorage.getItem('ldd_hide_export_warnings') === '1');
   const [bypassWarnings, setBypassWarnings] = useState(false);
+  const [dontShowExportWarnings, setDontShowExportWarnings] = useState<boolean>(() => localStorage.getItem('ldd_hide_export_warnings') === '1');
   const [pendingPreviewExport, setPendingPreviewExport] = useState<boolean | null>(null);
 
   const handleExportPDF = async (preview: boolean) => {
@@ -826,13 +824,6 @@ const App: React.FC = () => {
 
 
     const canvas = document.getElementById('pdf-canvas');
-    // Resolve simple tokens for export without mutating the live editor state.
-    const exportConfig: PDFConfig = JSON.parse(JSON.stringify(config));
-    exportConfigRef.current = exportConfig;
-    (['title','shortDesc','mainDesc','footer'] as const).forEach(k => { (exportConfig.content as any)[k] = [k], exportConfig); });
-    exportConfig.promo.title = ;
-    exportConfig.promo.code = ;
-    exportConfig.promo.description = ;
 
     if (!canvas) return;
     const originalTransform = canvas.style.transform;
@@ -1337,21 +1328,20 @@ const App: React.FC = () => {
               ))}
             </ul>
 
-            
             <div className="flex items-center gap-2 mt-4 text-xs text-slate-600">
               <input
                 type="checkbox"
                 checked={dontShowExportWarnings}
                 onChange={(e) => {
-                  setDontShowExportWarnings(e.target.checked);
-                  localStorage.setItem('ldd_hide_export_warnings', e.target.checked ? '1' : '0');
+                  const v = e.target.checked;
+                  setDontShowExportWarnings(v);
+                  localStorage.setItem('ldd_hide_export_warnings', v ? '1' : '0');
                 }}
               />
               <span>Don’t show export warnings again</span>
             </div>
 
             <div className="flex gap-3 mt-6 justify-end">
-        
               <button
                 onClick={() => { setExportWarnings(null); setPendingPreviewExport(null); }}
                 className="px-4 py-2 rounded-xl font-black text-xs border border-slate-200 hover:bg-slate-50"
