@@ -328,6 +328,27 @@ const App: React.FC = () => {
     return JSON.parse(localStorage.getItem('lavender_presets') || '[]');
   });
 
+  // Close context menu on scroll/zoom/resize so it doesn't stay open while the viewport changes.
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => {
+      setContextMenu(null);
+      setAlignSubmenuOpen(false);
+    };
+
+    // Capture phase so we close even if inner handlers stop propagation.
+    window.addEventListener('wheel', close, { capture: true, passive: true } as any);
+    window.addEventListener('scroll', close, { capture: true, passive: true } as any);
+    window.addEventListener('resize', close, { passive: true } as any);
+    window.addEventListener('orientationchange', close, { passive: true } as any);
+    return () => {
+      window.removeEventListener('wheel', close as any, true);
+      window.removeEventListener('scroll', close as any, true);
+      window.removeEventListener('resize', close as any);
+      window.removeEventListener('orientationchange', close as any);
+    };
+  }, [contextMenu]);
+
   // --- AI Settings (per-user key stored locally) ---
   const [showSettings, setShowSettings] = useState(false);
   const [geminiKey, setGeminiKey] = useState(() => getStoredGeminiKey());
@@ -618,7 +639,9 @@ const App: React.FC = () => {
 
   const handleAction = useCallback((action: string) => {
     const id = contextMenu?.id || selectedId;
-    if ((action === 'duplicate' || action === 'copy') && (id === 'button' || id === 'qr' || id === 'promo')) return;
+    // Built-in download button should not be copyable/duplicable.
+    // (Prevents accidental extra buttons and export weirdness.)
+    if ((action === 'duplicate' || action === 'copy') && id === 'button') return;
 
     const isExtra = contextMenu?.isExtra || isExtraLayer(selectedId);
 
@@ -1781,20 +1804,23 @@ const App: React.FC = () => {
             }}
           >
             {/* Main menu */}
-            <div className="relative bg-white border-2 border-slate-200 shadow-2xl rounded-2xl py-2 overflow-hidden animate-in zoom-in-95 duration-100">
+            {/* NOTE: overflow must be visible so submenus can render outside the rounded box */}
+            <div className="relative bg-white border-2 border-slate-200 shadow-2xl rounded-2xl py-2 animate-in zoom-in-95 duration-100 overflow-visible">
             {contextMenu.id !== 'canvas' ? (
               <>
                 {/* GROUP: Clipboard */}
                 <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Clipboard</div>
                 <button
                   onClick={() => handleAction('copy')}
-                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                  disabled={contextMenu.id === 'button'}
+                  className={`w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left ${contextMenu.id === 'button' ? 'text-slate-300 cursor-not-allowed' : 'text-slate-900 hover:bg-slate-50'}`}
                 >
                   <Copy size={16} /> Copy
                 </button>
                 <button
                   onClick={() => handleAction('duplicate')}
-                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                  disabled={contextMenu.id === 'button'}
+                  className={`w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left ${contextMenu.id === 'button' ? 'text-slate-300 cursor-not-allowed' : 'text-slate-900 hover:bg-slate-50'}`}
                 >
                   <Plus size={16} /> Duplicate
                 </button>
@@ -1804,11 +1830,8 @@ const App: React.FC = () => {
                 {/* GROUP: Align (submenu) */}
                 <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Align</div>
 
-                <div
-                  className="group relative"
-                  onMouseEnter={() => setAlignSubmenuOpen(true)}
-                  onMouseLeave={() => setAlignSubmenuOpen(false)}
-                >
+                {/* Align submenu: click-toggled (not hover) so it won't disappear while moving into it */}
+                <div className="relative">
                   <button
                     className="w-full px-6 py-3 hover:bg-slate-50 flex items-center justify-between text-xs font-black text-slate-900 text-left"
                     onClick={(e) => {
@@ -1824,14 +1847,18 @@ const App: React.FC = () => {
                   {/* Align submenu */}
                   {alignSubmenuOpen && (
                     <div
-                      className="absolute top-0"
+                      className="absolute top-0 z-[220]"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
                       style={(() => {
                         const SUB_W = 240;
                         const PAD = 10;
-                        const menuLeft = contextMenu.left;
-                        const openLeft = menuLeft + 256 + SUB_W + PAD > window.innerWidth;
+                        // Collision detection: if there isn't enough room to the right, open the submenu to the left.
+                        // Use the original cursor anchor (not the clamped left) for more intuitive behavior.
+                        // Use the actual rendered menu position (clamped) to decide flip.
+                        const openLeft = (contextMenu.left + 256 + SUB_W + PAD) > window.innerWidth;
                         const sideStyle: React.CSSProperties = openLeft
-                          ? { right: 256 + 8 }
+                          ? { left: -(SUB_W + 8) }
                           : { left: 256 + 8 };
 
                         // If the main menu is flipped up, the submenu should still stay on-screen.
