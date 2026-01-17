@@ -5,7 +5,7 @@ import {
   FileText, Image as ImageIcon, Type, Palette, 
   Tag, Share2, File, Save, Download, 
   X, AlignLeft, AlignCenter, AlignRight, AlignJustify,
-  Trash2, Settings, Loader2, Plus, 
+  Trash2, ArrowUp, ArrowDown, ChevronsUp, ChevronsDown, Settings, Loader2, Plus, 
   Facebook, Instagram, ShoppingBag, Globe, Store, ShoppingCart,
   RotateCw, Copy, Scissors, Clipboard, Undo2, Redo2, Layers, Eye,
   Link as LinkIcon, HardDrive, Cloud, Sun, Moon, Info, MousePointer2, Move,
@@ -98,6 +98,83 @@ const INITIAL_CONFIG: PDFConfig = {
 };
 
 const FONT_FAMILIES = ['Inter', 'Arial', 'Verdana', 'Georgia', 'Times New Roman', 'Courier New'];
+
+
+// --- Text box auto-fit helpers (prevents cut-off on load) ---
+function measureTextBox(text: string, font: string, maxWidth: number, padding = 16, lineHeightMult = 1.25) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+  ctx.font = font;
+
+  const rawLines = (text || '').split('\n');
+  const lines: string[] = [];
+
+  for (const raw of rawLines) {
+    const words = raw.split(' ');
+    let line = '';
+    for (const w of words) {
+      const test = line ? `${line} ${w}` : w;
+      if (ctx.measureText(test).width > Math.max(1, maxWidth - padding * 2) && line) {
+        lines.push(line);
+        line = w;
+      } else {
+        line = test;
+      }
+    }
+    lines.push(line);
+  }
+
+  let widest = 0;
+  for (const l of lines) widest = Math.max(widest, ctx.measureText(l).width);
+
+  // baseline-safe line height
+  const fontSizeMatch = /\b(\d+(?:\.\d+)?)px\b/.exec(font);
+  const fontSize = fontSizeMatch ? parseFloat(fontSizeMatch[1]) : 14;
+  const lineHeight = fontSize * lineHeightMult;
+
+  const height = Math.ceil(lines.length * lineHeight + padding * 2);
+  const width = Math.ceil(widest + padding * 2);
+
+  return { width, height, lineCount: lines.length };
+}
+
+function autoFitStandardTextBlocks(cfg: PDFConfig): PDFConfig {
+  const next = JSON.parse(JSON.stringify(cfg)) as PDFConfig;
+
+  const MIN_W: Record<string, number> = {
+    title: 420, shortDesc: 380, mainDesc: 520, footer: 420, promo: 560, socials: 520
+  };
+  const MIN_H: Record<string, number> = {
+    title: 80, shortDesc: 70, mainDesc: 160, footer: 60, promo: 170, socials: 70
+  };
+
+  const blocks = ['title','shortDesc','mainDesc','footer','promo','socials'] as const;
+
+  for (const id of blocks) {
+    const b = (next.layout.blocks as any)[id];
+    const f = (next.fonts.blocks as any)[id];
+    if (!b || !f) continue;
+
+    const weight = f.bold ? 800 : 600;
+    const style = f.italic ? 'italic' : 'normal';
+    const font = `${style} ${weight} ${f.size}px ${f.family || next.fonts.global || 'Inter'}`;
+
+    const text =
+      id === 'promo'
+        ? `${next.promo.title || ''}\n${next.promo.code || ''}\n${next.promo.description || ''}${next.promo.expiry ? `\n${next.promo.expiry}` : ''}`
+        : ((next.content as any)[id] || '');
+
+    const minW = MIN_W[id] ?? 360;
+    const minH = MIN_H[id] ?? 80;
+
+    // Expand width/height just enough so the loaded project doesn't look "cut off".
+    const measured = measureTextBox(text, font, Math.max(b.w || 1, minW), 16, 1.25);
+    b.w = Math.max(b.w || 0, measured.width, minW);
+    b.h = Math.max(b.h || 0, measured.height, minH);
+  }
+
+  return next;
+}
 
 const DraggableBlock: React.FC<{
   id: string;
@@ -235,6 +312,30 @@ const App: React.FC = () => {
   const [isTipsMinimized, setIsTipsMinimized] = useState(true);
   const [isSidebarMinimized, setIsSidebarMinimized] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, id: string, isExtra: boolean } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!contextMenu) return;
+    const el = contextMenuRef.current;
+    if (!el) return;
+
+    const PAD = 12;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const r = el.getBoundingClientRect();
+
+    let x = contextMenu.x;
+    let y = contextMenu.y;
+
+    if (x + r.width + PAD > vw) x = Math.max(PAD, vw - r.width - PAD);
+    if (y + r.height + PAD > vh) y = Math.max(PAD, vh - r.height - PAD);
+    if (x < PAD) x = PAD;
+    if (y < PAD) y = PAD;
+
+    if (x !== contextMenu.x || y !== contextMenu.y) {
+      setContextMenu(prev => (prev ? { ...prev, x, y } : prev));
+    }
+  }, [contextMenu]);
+
   const [clipboard, setClipboard] = useState<any>(null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [savedPresets, setSavedPresets] = useState<{name: string, config: PDFConfig}[]>(() => {
@@ -253,6 +354,8 @@ const App: React.FC = () => {
 
   // Appearance
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('lavender_theme') as any) || 'light');
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+  const effectiveConfig = config;
 
   const [zoom, setZoom] = useState(0.65);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -284,6 +387,9 @@ const App: React.FC = () => {
     const savedWork = localStorage.getItem('lavender_autosave');
     if (savedWork && !skipRestore) setRestoreModal(true);
   }, []);
+
+  // Ensure text blocks don't load with tiny boxes that clip content.
+  useEffect(() => { setConfig(prev => autoFitStandardTextBlocks(prev)); }, []);
 
   // Auto-save logic
 
@@ -526,6 +632,7 @@ const App: React.FC = () => {
   };
 
   const handleAction = useCallback((action: string) => {
+    try {
     const id = contextMenu?.id || selectedId;
     if ((action === 'duplicate' || action === 'copy') && (id === 'button' || id === 'qr' || id === 'promo')) return;
 
@@ -633,6 +740,59 @@ const App: React.FC = () => {
           if (item) setClipboard(JSON.parse(JSON.stringify(item)));
         }
         break;
+
+      case 'align-top':
+        if (id) {
+          if (isExtra) updateConfig('layout.extraLayers', config.layout.extraLayers.map(l => l.id === id ? { ...l, y: 0 } : l));
+          else updateConfig(`layout.blocks.${id}.y`, 0);
+        }
+        break;
+      case 'align-middle':
+        if (id) {
+          const b = isExtra ? config.layout.extraLayers.find(l => l.id === id) : config.layout.blocks[id];
+          if (b) {
+            const newY = (CANVAS_HEIGHT - b.h) / 2;
+            if (isExtra) updateConfig('layout.extraLayers', config.layout.extraLayers.map(l => l.id === id ? { ...l, y: newY } : l));
+            else updateConfig(`layout.blocks.${id}.y`, newY);
+          }
+        }
+        break;
+      case 'align-bottom':
+        if (id) {
+          const b = isExtra ? config.layout.extraLayers.find(l => l.id === id) : config.layout.blocks[id];
+          if (b) {
+            const newY = CANVAS_HEIGHT - b.h;
+            if (isExtra) updateConfig('layout.extraLayers', config.layout.extraLayers.map(l => l.id === id ? { ...l, y: newY } : l));
+            else updateConfig(`layout.blocks.${id}.y`, newY);
+          }
+        }
+        break;
+      case 'bring-forward':
+      case 'send-backward':
+      case 'bring-front':
+      case 'send-back':
+        if (id && isExtra) {
+          const layers = [...config.layout.extraLayers];
+          const idx = layers.findIndex(l => l.id === id);
+          if (idx !== -1) {
+            const item = layers[idx];
+            layers.splice(idx, 1);
+            if (action === 'bring-forward') {
+              const newIdx = Math.min(layers.length, idx + 1);
+              layers.splice(newIdx, 0, item);
+            } else if (action === 'send-backward') {
+              const newIdx = Math.max(0, idx - 1);
+              layers.splice(newIdx, 0, item);
+            } else if (action === 'bring-front') {
+              layers.push(item);
+            } else if (action === 'send-back') {
+              layers.unshift(item);
+            }
+            updateConfig('layout.extraLayers', layers);
+          }
+        }
+        break;
+
       case 'delete':
         if (id && !editingId) {
           if (isExtra) updateConfig('layout.extraLayers', config.layout.extraLayers.filter(l => l.id !== id));
@@ -641,7 +801,10 @@ const App: React.FC = () => {
         }
         break;
     }
-    setContextMenu(null);
+  
+    } finally {
+      setContextMenu(null);
+    }
   }, [config, contextMenu, selectedId, clipboard, editingId, isExtraLayer]);
 
   useEffect(() => { 
@@ -684,8 +847,66 @@ const App: React.FC = () => {
     ].filter(s => !!s.link);
   }, [config.socials]);
 
+
+  const validateBeforeExport = (cfg: PDFConfig) => {
+    const warnings: string[] = [];
+
+    // Link sanity
+    const hasMdFile = cfg.source?.mode === 'upload' && !!cfg.source?.fileName;
+    const link = (cfg.source?.link || '').trim();
+    if (!hasMdFile && !link) warnings.push("No download link detected. Upload your MyDesigns Download.pdf or paste a link.");
+
+    // Basic text overflow check (approx)
+    const ids = ['title','shortDesc','mainDesc','footer','socials'] as const;
+    for (const id of ids) {
+      if (!(cfg.visibility as any)[id]) continue;
+      const b = (cfg.layout.blocks as any)[id];
+      const f = (cfg.fonts.blocks as any)[id];
+      if (!b || !f) continue;
+      const weight = f.bold ? 800 : 600;
+      const style = f.italic ? 'italic' : 'normal';
+      const font = `${style} ${weight} ${f.size}px ${f.family || cfg.fonts.global || 'Inter'}`;
+      const t = ((cfg.content as any)[id] || '').toString();
+      const measured = measureTextBox(t, font, b.w || 1, 16, 1.25);
+      if (measured.height > (b.h || 0)) warnings.push(`“${id}” may overflow (box is too short). Try making the text box taller.`);
+    }
+
+    // Promo overflow check
+    if (cfg.visibility.promo && cfg.promo?.enabled) {
+      const b = (cfg.layout.blocks as any).promo;
+      const f = (cfg.fonts.blocks as any).promo;
+      if (b && f) {
+        const weight = f.bold ? 800 : 600;
+        const style = f.italic ? 'italic' : 'normal';
+        const font = `${style} ${weight} ${f.size}px ${f.family || cfg.fonts.global || 'Inter'}`;
+        const t = `${cfg.promo.title || ''}\n${cfg.promo.code || ''}\n${cfg.promo.description || ''}${cfg.promo.expiry ? `\n${cfg.promo.expiry}` : ''}`;
+        const measured = measureTextBox(t, font, b.w || 1, 16, 1.25);
+        if (measured.height > (b.h || 0)) warnings.push("Promo text may overflow. Make the promo box taller or reduce font size.");
+      }
+    }
+
+    return warnings;
+  };
+
+  const [exportWarnings, setExportWarnings] = useState<string[] | null>(null);
+  const [bypassWarnings, setBypassWarnings] = useState(false);
+  const [dontShowExportWarnings, setDontShowExportWarnings] = useState<boolean>(() => localStorage.getItem('ldd_hide_export_warnings') === '1');
+  const [pendingPreviewExport, setPendingPreviewExport] = useState<boolean | null>(null);
+
   const handleExportPDF = async (preview: boolean) => {
+    if (!bypassWarnings) {
+      const warnings = dontShowExportWarnings ? [] : validateBeforeExport(config);
+      if (warnings.length) {
+      setExportWarnings(warnings);
+        setPendingPreviewExport(preview);
+        return;
+      }
+    }
+    if (bypassWarnings) setBypassWarnings(false);
+
+
     const canvas = document.getElementById('pdf-canvas');
+
     if (!canvas) return;
     const originalTransform = canvas.style.transform;
     canvas.style.transform = 'scale(1)';
@@ -1033,7 +1254,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-6 w-full animate-in fade-in slide-in-from-top-4 duration-300">
             <div className="flex items-center gap-3 pr-6 border-r border-slate-200">
               <span className="text-[10px] font-black text-indigo-600 uppercase tracking-widest bg-indigo-50 px-2 py-1 rounded-lg">Selected: {selectedId?.split('-')[0]}</span>
-              <button onClick={() => handleAction('delete')} className="p-2 text-red-500 hover:bg-red-50 rounded-xl transition-all"><Trash2 size={16}/></button>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('delete'); setContextMenu(null); }} className="p-2 text-red-500 hover:bg-red-50 rounded-xl transition-all"><Trash2 size={16}/></button>
             </div>
             
             {activeElementProps.isText && activeFont && (
@@ -1053,7 +1274,7 @@ const App: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-1 border-l pl-6 border-slate-200">
-                  <button onClick={() => handleAction('font-dec')} className="p-2 hover:bg-slate-100 rounded-lg"><Minimize2 size={14}/></button>
+                  <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('font-dec'); setContextMenu(null); }} className="p-2 hover:bg-slate-100 rounded-lg"><Minimize2 size={14}/></button>
                   <input 
                     type="number" 
                     className="w-12 bg-slate-50 text-center font-black text-xs outline-none rounded py-1" 
@@ -1064,24 +1285,24 @@ const App: React.FC = () => {
                       else updateConfig(`fonts.blocks.${selectedId}.size`, ns);
                     }}
                   />
-                  <button onClick={() => handleAction('font-inc')} className="p-2 hover:bg-slate-100 rounded-lg"><Plus size={14}/></button>
+                  <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('font-inc'); setContextMenu(null); }} className="p-2 hover:bg-slate-100 rounded-lg"><Plus size={14}/></button>
                 </div>
 
                 <div className="flex items-center gap-1 border-l pl-6 border-slate-200">
                   <button 
-                    onClick={() => handleAction('toggle-bold')} 
+                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('toggle-bold'); setContextMenu(null); }} 
                     className={`p-2 rounded-lg transition-all ${activeFont.bold ? 'bg-indigo-600 text-white shadow-md' : 'hover:bg-slate-100 text-slate-400'}`}
                   >
                     <Bold size={16}/>
                   </button>
                   <button 
-                    onClick={() => handleAction('toggle-italic')} 
+                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('toggle-italic'); setContextMenu(null); }} 
                     className={`p-2 rounded-lg transition-all ${activeFont.italic ? 'bg-indigo-600 text-white shadow-md' : 'hover:bg-slate-100 text-slate-400'}`}
                   >
                     <Italic size={16}/>
                   </button>
                   <button 
-                    onClick={() => handleAction('toggle-underline')} 
+                    onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('toggle-underline'); setContextMenu(null); }} 
                     className={`p-2 rounded-lg transition-all ${activeFont.underline ? 'bg-indigo-600 text-white shadow-md' : 'hover:bg-slate-100 text-slate-400'}`}
                   >
                     <Underline size={16}/>
@@ -1162,7 +1383,72 @@ const App: React.FC = () => {
         </div>
       )}
 
+
+      {/* Export warnings modal */}
+      {exportWarnings && (
+        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] p-7 max-w-lg w-full shadow-2xl border border-slate-100">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center shrink-0">
+                <Info className="text-amber-700" size={24} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-black text-slate-900">Export Warnings</h3>
+                <p className="text-xs text-slate-600 mt-1">You can still export, but these items might cause clipping or broken links.</p>
+              </div>
+              <button onClick={() => { setExportWarnings(null); setPendingPreviewExport(null); }} className="p-2 rounded-xl hover:bg-slate-100">
+                <X size={18} />
+              </button>
+            </div>
+
+            <ul className="mt-4 space-y-2 text-sm">
+              {exportWarnings.map((w, i) => (
+                <li key={i} className="flex gap-2 items-start">
+                  <span className="mt-0.5 w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                  <span className="text-slate-700">{w}</span>
+                </li>
+              ))}
+            </ul>
+
+            <div className="flex items-center gap-2 mt-4 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={dontShowExportWarnings}
+                onChange={(e) => {
+                  const v = e.target.checked;
+                  setDontShowExportWarnings(v);
+                  localStorage.setItem('ldd_hide_export_warnings', v ? '1' : '0');
+                }}
+              />
+              <span>Don’t show export warnings again</span>
+            </div>
+
+            <div className="flex gap-3 mt-6 justify-end">
+              <button
+                onClick={() => { setExportWarnings(null); setPendingPreviewExport(null); }}
+                className="px-4 py-2 rounded-xl font-black text-xs border border-slate-200 hover:bg-slate-50"
+              >
+                Fix It
+              </button>
+              <button
+                onClick={() => {
+                  const p = pendingPreviewExport ?? false;
+                  setExportWarnings(null);
+                  setPendingPreviewExport(null);
+                  setBypassWarnings(true);
+                  setTimeout(() => { handleExportPDF(p); }, 0);
+                }}
+                className="px-4 py-2 rounded-xl font-black text-xs bg-amber-600 text-white hover:bg-amber-700 shadow-lg shadow-amber-100"
+              >
+                Export Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* API Key Required Popup */}
+
       {needsApiKey && (
         <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
           <div className="bg-white rounded-[28px] p-7 max-w-md w-full shadow-2xl border border-slate-100">
@@ -1482,8 +1768,8 @@ const App: React.FC = () => {
            <button onClick={undo} title="Undo (Ctrl+Z)" className="p-3 hover:bg-slate-100 rounded-2xl text-slate-900 transition-all active:scale-90"><Undo2 size={20}/></button>
            <button onClick={redo} title="Redo (Ctrl+Y)" className="p-3 hover:bg-slate-100 rounded-2xl text-slate-900 transition-all active:scale-90"><Redo2 size={20}/></button>
            <div className="w-px h-8 bg-slate-200 mx-1"></div>
-           <button onClick={() => handleAction('copy')} title="Copy (Ctrl+C)" className="p-3 hover:bg-slate-100 rounded-2xl text-slate-900 transition-all active:scale-90"><Copy size={20}/></button>
-           <button onClick={() => handleAction('paste')} title="Paste (Ctrl+V)" className={`p-3 rounded-2xl transition-all active:scale-90 ${clipboard ? 'text-slate-900 hover:bg-slate-100' : 'text-slate-200 cursor-not-allowed'}`} disabled={!clipboard}><Clipboard size={20}/></button>
+           <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('copy'); setContextMenu(null); }} title="Copy (Ctrl+C)" className="p-3 hover:bg-slate-100 rounded-2xl text-slate-900 transition-all active:scale-90"><Copy size={20}/></button>
+           <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('paste'); setContextMenu(null); }} title="Paste (Ctrl+V)" className={`p-3 rounded-2xl transition-all active:scale-90 ${clipboard ? 'text-slate-900 hover:bg-slate-100' : 'text-slate-200 cursor-not-allowed'}`} disabled={!clipboard}><Clipboard size={20}/></button>
            <div className="w-px h-8 bg-slate-200 mx-1"></div>
            <div className="px-4 font-black text-slate-900 text-xs min-w-[60px] text-center">{Math.round(zoom * 100)}%</div>
            <button onClick={() => { setZoom(0.65); setOffset({ x: 0, y: 0 }); }} className="p-3 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 active:scale-90 transition-all"><Maximize size={20} /></button>
@@ -1493,12 +1779,81 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {contextMenu && (
-        <div className="fixed z-[200] bg-white border-2 border-slate-200 shadow-2xl rounded-2xl py-2 w-64 overflow-hidden animate-in zoom-in-95 duration-100" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
+      
+{contextMenu && (
+        <div className="fixed z-[200] bg-white border-2 border-slate-100 rounded-2xl shadow-2xl overflow-hidden min-w-[220px]" style={{ left: contextMenu.x, top: contextMenu.y }} ref={contextMenuRef} onMouseDown={e => e.stopPropagation()}>
           {contextMenu.id !== 'canvas' ? (
-            <><button onClick={() => handleAction('copy')} className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"><Copy size={16}/> Copy</button><button onClick={() => handleAction('duplicate')} className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"><Plus size={16}/> Duplicate</button><div className="h-px bg-slate-100 my-1" /><button onClick={() => handleAction('align-center')} className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"><AlignCenter size={16}/> Center X</button><div className="h-px bg-slate-100 my-1" /><button onClick={() => handleAction('delete')} className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-red-600 text-left"><Trash2 size={16}/> Remove</button></>
+            <>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('copy'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                <Copy size={16}/> Copy
+              </button>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('duplicate'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                <Scissors size={16}/> Duplicate
+              </button>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('paste'); setContextMenu(null); }} disabled={!clipboard} className={`w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-left ${clipboard ? 'text-slate-900' : 'text-slate-300 cursor-not-allowed'}`}>
+                <Clipboard size={16}/> Paste
+              </button>
+
+              <div className="h-px bg-slate-200 my-1" />
+
+              <div className="px-4 py-2 text-[11px] font-black text-slate-500">Align</div>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('align-left'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                <Move size={16}/> Left
+              </button>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('align-center'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                <Move size={16}/> Center X
+              </button>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('align-right'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                <Move size={16}/> Right
+              </button>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('align-top'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                <Move size={16}/> Top
+              </button>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('align-middle'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                <Move size={16}/> Center Y
+              </button>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('align-bottom'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                <Move size={16}/> Bottom
+              </button>
+
+              {contextMenu.isExtra && (
+                <>
+                  <div className="h-px bg-slate-200 my-1" />
+                  <div className="px-4 py-2 text-[11px] font-black text-slate-500">Order (Extra layers only)</div>
+                  <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('bring-forward'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                    <ArrowUp size={16}/> Bring forward
+                  </button>
+                  <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('send-backward'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                    <ArrowDown size={16}/> Send backward
+                  </button>
+                  <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('bring-front'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                    <ChevronsUp size={16}/> Bring to front
+                  </button>
+                  <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('send-back'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                    <ChevronsDown size={16}/> Send to back
+                  </button>
+                </>
+              )}
+
+              <div className="h-px bg-slate-200 my-1" />
+
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('delete'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-red-50 flex items-center gap-3 text-sm font-black text-red-600 text-left">
+                <Trash2 size={16}/> Remove
+              </button>
+            </>
           ) : (
-            <><button onClick={() => handleAction('paste')} disabled={!clipboard} className={`w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-left ${clipboard ? 'text-slate-900' : 'text-slate-300'}`}><Clipboard size={16}/> Paste</button><div className="h-px bg-slate-100 my-1" /><button onClick={() => { setActiveTab(EditorTab.ASSETS); setContextMenu(null); }} className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"><Layers size={16}/> Layers Library</button></>
+            <>
+              <button onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handleAction('paste'); setContextMenu(null); }} disabled={!clipboard} className={`w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-left ${clipboard ? 'text-slate-900' : 'text-slate-300 cursor-not-allowed'}`}>
+                <Clipboard size={16}/> Paste
+              </button>
+              <button onClick={() => { setSelectedId(null); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                <MousePointer2 size={16}/> Deselect
+              </button>
+              <div className="h-px bg-slate-200 my-1" />
+              <button onClick={() => { setActiveTab('assets'); setContextMenu(null); }} className="w-full px-4 py-3 hover:bg-slate-50 flex items-center gap-3 text-sm font-black text-slate-900 text-left">
+                <Layers size={16}/> Layers Library
+              </button>
+            </>
           )}
         </div>
       )}
