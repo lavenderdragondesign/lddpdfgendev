@@ -881,20 +881,23 @@ const App: React.FC = () => {
   };
 
   const [exportWarnings, setExportWarnings] = useState<string[] | null>(null);
-  const [bypassWarnings, setBypassWarnings] = useState(false);
+  // One-shot bypass for export warnings. Must be a ref (not state) so "Export Anyway"
+  // cannot immediately re-trigger the same modal due to async state updates.
+  const bypassWarningsRef = useRef(false);
   const [dontShowExportWarnings, setDontShowExportWarnings] = useState<boolean>(() => localStorage.getItem('ldd_hide_export_warnings') === '1');
   const [pendingPreviewExport, setPendingPreviewExport] = useState<boolean | null>(null);
 
   const handleExportPDF = async (preview: boolean) => {
-    if (!bypassWarnings) {
+    if (!bypassWarningsRef.current) {
       const warnings = dontShowExportWarnings ? [] : validateBeforeExport(config);
       if (warnings.length) {
-      setExportWarnings(warnings);
+        setExportWarnings(warnings);
         setPendingPreviewExport(preview);
         return;
       }
     }
-    if (bypassWarnings) setBypassWarnings(false);
+    // Reset bypass after a successful confirmation.
+    if (bypassWarningsRef.current) bypassWarningsRef.current = false;
 
 
     const canvas = document.getElementById('pdf-canvas');
@@ -1427,8 +1430,9 @@ const App: React.FC = () => {
                   const p = pendingPreviewExport ?? false;
                   setExportWarnings(null);
                   setPendingPreviewExport(null);
-                  setBypassWarnings(true);
-                  setTimeout(() => { handleExportPDF(p); }, 0);
+                  // One-shot bypass so this confirm never re-triggers the same modal.
+                  bypassWarningsRef.current = true;
+                  handleExportPDF(p);
                 }}
                 className="px-4 py-2 rounded-xl font-black text-xs bg-amber-600 text-white hover:bg-amber-700 shadow-lg shadow-amber-100"
               >
