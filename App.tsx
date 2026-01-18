@@ -291,20 +291,32 @@ const DraggableBlock: React.FC<{
   return (
     <div
       className={`absolute group select-none flex items-center justify-center ${config.layout.freeform ? 'cursor-move' : ''} ${isPrimary ? 'ring-2 ring-indigo-600 ring-offset-2 shadow-2xl z-50' : isSelected ? 'ring-2 ring-blue-500 ring-offset-1 z-40' : ''}`}
+	      // IMPORTANT: use capture so selection still works even when inner elements stopPropagation
+	      // (inputs, editable text, etc). This mirrors desktop editors: click anywhere inside selects.
+	      onMouseDownCapture={(e) => {
+	        if (e.button !== 0 || isEditing) return;
+	        const alreadySelected = selectedIds.includes(id);
+	        const mode: 'replace' | 'toggle' | 'add' | 'keep' = (e.ctrlKey || e.metaKey)
+	          ? 'toggle'
+	          : e.shiftKey
+	            ? 'add'
+	            : alreadySelected
+	              ? 'keep'
+	              : 'replace';
+	        onSelect(id, mode);
+	      }}
       onMouseDown={(e) => {
         if (e.button !== 0 || isEditing) return;
         e.stopPropagation();
 
-        const alreadySelected = selectedIds.includes(id);
-        const mode: 'replace' | 'toggle' | 'add' | 'keep' = (e.ctrlKey || e.metaKey)
-          ? 'toggle'
-          : e.shiftKey
-            ? 'add'
-            : alreadySelected
-              ? 'keep'
-              : 'replace';
-
-        onSelect(id, mode);
+	        const alreadySelected = selectedIds.includes(id);
+	        const mode: 'replace' | 'toggle' | 'add' | 'keep' = (e.ctrlKey || e.metaKey)
+	          ? 'toggle'
+	          : e.shiftKey
+	            ? 'add'
+	            : alreadySelected
+	              ? 'keep'
+	              : 'replace';
 
         const target = e.target as HTMLElement;
         if (target.closest('.close-button') || target.closest('.resize-handle') || target.closest('.clickable-part')) return;
@@ -807,7 +819,9 @@ const App: React.FC = () => {
       case 'space-h':
       case 'space-v': {
         // Align / distribute works on the current multi-selection (or the clicked item).
-        const baseIds = (selectedIds && selectedIds.length) ? selectedIds : (id ? [id] : []);
+        const baseIds = (selectedIds && selectedIds.length)
+          ? Array.from(new Set(selectedIds))
+          : (id ? [id] : []);
         if (!baseIds.length) break;
 
         const groups = (config.layout.groups || []);
@@ -875,9 +889,11 @@ const App: React.FC = () => {
           }
         }
 
+        // Distribute spacing behaves like design tools: needs 3+ units to be meaningful.
+        // Keeps the outer bounds defined by the selection span.
         if (action === 'space-h') {
           const sorted = units.slice().sort((a, b) => a.rect.x - b.rect.x);
-          if (sorted.length >= 2) {
+          if (sorted.length >= 3) {
             const minX = Math.min(...sorted.map(u => u.rect.x));
             const maxX = Math.max(...sorted.map(u => u.rect.x + u.rect.w));
             const totalW = sorted.reduce((s, u) => s + u.rect.w, 0);
@@ -893,7 +909,7 @@ const App: React.FC = () => {
 
         if (action === 'space-v') {
           const sorted = units.slice().sort((a, b) => a.rect.y - b.rect.y);
-          if (sorted.length >= 2) {
+          if (sorted.length >= 3) {
             const minY = Math.min(...sorted.map(u => u.rect.y));
             const maxY = Math.max(...sorted.map(u => u.rect.y + u.rect.h));
             const totalH = sorted.reduce((s, u) => s + u.rect.h, 0);
@@ -978,12 +994,23 @@ const App: React.FC = () => {
   useEffect(() => { 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (editingId) return;
+	      if (e.key === 'Escape') {
+	        clearSelection();
+	        setEditingId(null);
+	        setContextMenu(null);
+	        setAlignSubmenuOpen(false);
+	        return;
+	      }
       if (e.code === 'Space') { if ((e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'TEXTAREA') { e.preventDefault(); setIsSpaceDown(true); } }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const target = e.target as HTMLElement;
         if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' && !target.isContentEditable && !contextMenu) handleAction('delete');
       }
       if (e.ctrlKey || e.metaKey) {
+	        if (e.key.toLowerCase() === 'g') {
+	          e.preventDefault();
+	          handleAction(e.shiftKey ? 'ungroup' : 'group');
+	        }
         if (e.key === 'c') { e.preventDefault(); handleAction('copy'); }
         if (e.key === 'v') { e.preventDefault(); handleAction('paste'); }
         if (e.key === 'z') { e.preventDefault(); undo(); }
@@ -1072,7 +1099,8 @@ const App: React.FC = () => {
 
       // Blocks
       for (const [id, b] of Object.entries(config.layout.blocks)) {
-        if (!config.visibility[id]) continue;
+        // Treat undefined as visible; only skip when explicitly hidden.
+        if ((config.visibility as any)[id] === false) continue;
         if (!b) continue;
         if (rectIntersects({ x: b.x, y: b.y, w: b.w, h: b.h }, sel)) hits.push(id);
       }
@@ -2140,7 +2168,17 @@ const App: React.FC = () => {
            <button onClick={() => { setZoom(0.65); setOffset({ x: 0, y: 0 }); }} className="p-3 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 active:scale-90 transition-all"><Maximize size={20} /></button>
         </div>
         <div className={`fixed bottom-10 right-10 bg-white border-2 border-slate-200 p-6 rounded-[30px] shadow-2xl z-[60] transition-all duration-300 ${isTipsMinimized ? 'w-16 h-16 p-0 overflow-hidden flex items-center justify-center cursor-pointer' : 'w-72 h-auto'}`} onClick={() => isTipsMinimized && setIsTipsMinimized(false)}>
-           {!isTipsMinimized ? (<><div className="flex items-center justify-between mb-3"><div className="flex items-center gap-3"><Info className="text-indigo-600" size={20} /><span className="text-xs font-black uppercase text-slate-900 tracking-widest">Editor Tips</span></div><button onClick={(e) => { e.stopPropagation(); setIsTipsMinimized(true); }} className="p-1 hover:bg-slate-100 rounded-lg"><Minimize2 size={16}/></button></div><ul className="text-[10px] font-black text-slate-500 space-y-3"><li className="flex items-center gap-2"><MousePointer2 size={12}/> Scroll to Zoom</li><li className="flex items-center gap-2"><Move size={12}/> Space + Drag to Pan</li><li className="flex items-center gap-2"><Layout size={12}/> Click sidebar to start</li></ul></>) : (<Info className="text-indigo-600" size={24} />)}
+           {!isTipsMinimized ? (<><div className="flex items-center justify-between mb-3"><div className="flex items-center gap-3"><Info className="text-indigo-600" size={20} /><span className="text-xs font-black uppercase text-slate-900 tracking-widest">Editor Tips</span></div><button onClick={(e) => { e.stopPropagation(); setIsTipsMinimized(true); }} className="p-1 hover:bg-slate-100 rounded-lg"><Minimize2 size={16}/></button></div><ul className="text-[10px] font-black text-slate-500 space-y-3">
+  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Scroll to Zoom</li>
+  <li className="flex items-center gap-2"><Move size={12}/> Space + Drag to Pan</li>
+  <li className="flex items-center gap-2"><Layout size={12}/> Click sidebar to start</li>
+  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Shift + Click to add items</li>
+  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Ctrl/Cmd + Click to toggle items</li>
+  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Drag on empty space to box-select</li>
+  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Ctrl/Cmd + Drag to add with box-select</li>
+  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Ctrl/Cmd + G group • Ctrl/Cmd + Shift + G ungroup</li>
+  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Esc clears selection & closes menus</li>
+</ul></>) : (<Info className="text-indigo-600" size={24} />)}
         </div>
       </div>
 
