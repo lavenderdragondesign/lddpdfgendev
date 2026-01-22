@@ -45,6 +45,7 @@ const INITIAL_CONFIG: PDFConfig = {
       mainDesc: { family: 'Inter', size: 30, align: 'center', color: '#475569' },
       footer: { family: 'Inter', size: 10, align: 'center', color: '#94a3b8' },
       promo: { family: 'Inter', size: 18, align: 'center', color: '#ffffff', bold: true },
+      button: { family: 'Inter', size: 20, align: 'center', color: '#ffffff', bold: true },
       socials: { family: 'Inter', size: 12, align: 'center', color: '#475569' },
     }
   },
@@ -291,6 +292,7 @@ const DraggableBlock: React.FC<{
 
   if (!visible || !block) return null;
 
+
   return (
     <div
       className={`absolute group select-none flex items-center justify-center ${config.layout.freeform ? 'cursor-move' : ''} ${isPrimary ? 'ring-2 ring-indigo-600 ring-offset-2 shadow-2xl z-50' : isSelected ? 'ring-2 ring-blue-500 ring-offset-1 z-40' : ''}`}
@@ -375,11 +377,65 @@ const App: React.FC = () => {
   const [customFontFamilies, setCustomFontFamilies] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('ldd_custom_fonts') || '[]'); } catch { return []; }
   });
+	  // Persist actual font files so they still work after refresh.
+	  // Stored as data URLs in localStorage (best-effort; very large fonts may exceed quota).
+	  const CUSTOM_FONTS_DATA_KEY = 'ldd_custom_fonts_data_v1';
+	  type StoredFont = { name: string; dataUrl: string; uploadedAt: number };
+
+	  useEffect(() => {
+	    (async () => {
+	      let stored: StoredFont[] = [];
+	      try { stored = JSON.parse(localStorage.getItem(CUSTOM_FONTS_DATA_KEY) || '[]'); } catch { stored = []; }
+	      if (!stored?.length) return;
+	      // Load fonts into document.fonts
+	      for (const f of stored) {
+	        try {
+	          // @ts-ignore
+	          const ff = new FontFace(f.name, `url(${f.dataUrl})`);
+	          await ff.load();
+	          // @ts-ignore
+	          document.fonts.add(ff);
+	        } catch (e) {
+	          console.warn('Failed to restore font', f?.name, e);
+	        }
+	      }
+	      // Ensure the dropdown list includes these names
+	      setCustomFontFamilies(prev => {
+	        const set = new Set([...(prev || []), ...stored.map(s => s.name)]);
+	        const next = Array.from(set);
+	        try { localStorage.setItem('ldd_custom_fonts', JSON.stringify(next)); } catch {}
+	        return next;
+	      });
+	    })();
+	  }, []);
   const [config, setConfig] = useState<PDFConfig>(INITIAL_CONFIG);
+
+
+  // Fonts currently used anywhere in this document (blocks + extra text layers)
+  const usedFontsInDoc = useMemo(() => {
+    const used = new Set<string>();
+
+    const blocks: any = (config as any)?.fonts?.blocks || {};
+    for (const b of Object.values(blocks)) {
+      const fam = (b as any)?.family;
+      if (typeof fam === 'string' && fam.trim()) used.add(fam.trim());
+    }
+
+    for (const l of (config.layout?.extraLayers || [])) {
+      if (l && l.type === 'text' && typeof (l as any).fontFamily === 'string' && (l as any).fontFamily.trim()) {
+        used.add((l as any).fontFamily.trim());
+      }
+    }
+
+    return used;
+  }, [config]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const canvasRef = useRef<HTMLDivElement>(null);
   const fontUploadRef = useRef<HTMLInputElement>(null);
+  const [fontManagerOpen, setFontManagerOpen] = useState<boolean>(() => localStorage.getItem('ldd_font_manager_open') !== '0');
+  const [fontPreviewText, setFontPreviewText] = useState<string>(() => localStorage.getItem('ldd_font_preview_text') || 'The quick brown fox jumps over the lazy dog 123');
+
   const [marquee, setMarquee] = useState<null | { x0: number; y0: number; x1: number; y1: number; additive: boolean }>(null);
 
   const getGroupByMember = useCallback((id: string) => {
@@ -411,6 +467,7 @@ const App: React.FC = () => {
   const [snapLines, setSnapLines] = useState<{h: number[], v: number[]}>({ h: [], v: [] });
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [restoreModal, setRestoreModal] = useState(false);
+  const [restoreChoiceMade, setRestoreChoiceMade] = useState(false);
   const [dontShowAgain, setDontShowAgain] = useState(false);
 
 // Tips panel (docked on the right side of the editor viewport)
@@ -445,6 +502,14 @@ const [tipsSection, setTipsSection] = useState<EditorTab | 'CANVAS'>(EditorTab.S
 
 
 // Tips panel persistence + auto-section switching
+  useEffect(() => {
+    try { localStorage.setItem('ldd_font_manager_open', fontManagerOpen ? '1' : '0'); } catch {}
+  }, [fontManagerOpen]);
+
+  useEffect(() => {
+    try { localStorage.setItem('ldd_font_preview_text', fontPreviewText); } catch {}
+  }, [fontPreviewText]);
+
 useEffect(() => {
   localStorage.setItem(TIPS_OPEN_KEY, tipsOpen ? '1' : '0');
 }, [tipsOpen]);
@@ -538,11 +603,15 @@ useEffect(() => {
     }
   }, [config.socials.facebook, config.socials.instagram, config.socials.etsy, config.socials.website, config.socials.shopify, config.socials.woo]);
   useEffect(() => {
+    // If the "Resume Last Work" modal is open and the user hasn't chosen yet,
+    // do NOT autosave the blank INITIAL_CONFIG over their real saved work.
+    if (restoreModal && !restoreChoiceMade) return;
+
     const timer = setTimeout(() => {
       localStorage.setItem('lavender_autosave', JSON.stringify(config));
     }, 2000);
     return () => clearTimeout(timer);
-  }, [config]);
+  }, [config, restoreModal, restoreChoiceMade]);
 
   // Keep theme and auto-socials visibility in sync
   useEffect(() => {
@@ -786,19 +855,32 @@ useEffect(() => {
     localStorage.setItem('lavender_presets', JSON.stringify(newPresets));
   };
 
-const handleUploadFont = useCallback(async (file: File) => {
+	const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+	  const reader = new FileReader();
+	  reader.onerror = () => reject(new Error('Failed to read file'));
+	  reader.onload = () => resolve(String(reader.result));
+	  reader.readAsDataURL(file);
+	});
+
+	const handleUploadFont = useCallback(async (file: File) => {
   if (!file) return;
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   if (!['ttf','otf','woff','woff2'].includes(ext)) return;
   const baseName = file.name.replace(/\.[^/.]+$/, '');
   const fontName = `${baseName}-${Date.now()}`;
   try {
-    const data = await file.arrayBuffer();
-    // @ts-ignore
-    const fontFace = new FontFace(fontName, data);
+	    const [data, dataUrl] = await Promise.all([file.arrayBuffer(), readFileAsDataUrl(file)]);
+	    // @ts-ignore
+	    const fontFace = new FontFace(fontName, data);
     await fontFace.load();
     // @ts-ignore
     document.fonts.add(fontFace);
+	    // Persist the font so it works after refresh
+	    try {
+	      const existing: StoredFont[] = JSON.parse(localStorage.getItem(CUSTOM_FONTS_DATA_KEY) || '[]');
+	      const next = [...(existing || []).filter(x => x?.name !== fontName), { name: fontName, dataUrl, uploadedAt: Date.now() }];
+	      localStorage.setItem(CUSTOM_FONTS_DATA_KEY, JSON.stringify(next));
+	    } catch {}
     setCustomFontFamilies(prev => {
       const next = prev.includes(fontName) ? prev : [...prev, fontName];
       try { localStorage.setItem('ldd_custom_fonts', JSON.stringify(next)); } catch {}
@@ -817,6 +899,39 @@ const handleUploadFont = useCallback(async (file: File) => {
     console.error('Font upload failed', e);
   }
 }, [selectedId, config.layout.extraLayers, updateConfig]);
+
+  const uninstallCustomFont = useCallback((fontName: string) => {
+    if (!fontName) return;
+    // Remove from name list
+    setCustomFontFamilies(prev => {
+      const next = (prev || []).filter(n => n !== fontName);
+      try { localStorage.setItem('ldd_custom_fonts', JSON.stringify(next)); } catch {}
+      return next;
+    });
+    // Remove stored font data
+    try {
+      const existing: StoredFont[] = JSON.parse(localStorage.getItem(CUSTOM_FONTS_DATA_KEY) || '[]');
+      const next = (existing || []).filter(f => f?.name !== fontName);
+      localStorage.setItem(CUSTOM_FONTS_DATA_KEY, JSON.stringify(next));
+    } catch {}
+
+    // Revert any blocks using this font back to global font (or Inter)
+    const fallback = config.fonts?.global || 'Inter';
+    const nextConfig: any = JSON.parse(JSON.stringify(config));
+    try {
+      const blocks = nextConfig.fonts?.blocks || {};
+      for (const k of Object.keys(blocks)) {
+        if (blocks[k]?.family === fontName) blocks[k].family = fallback;
+      }
+      // Extra layers
+      nextConfig.layout.extraLayers = (nextConfig.layout.extraLayers || []).map((l: any) =>
+        l?.fontFamily === fontName ? { ...l, fontFamily: fallback } : l
+      );
+    } catch {}
+    setConfig(nextConfig);
+  }, [config]);
+
+
 
 
 
@@ -1053,7 +1168,7 @@ case 'moveBackward': {
 }
 case 'upload-font': {
   // triggers hidden file input
-  fontUploadRef.current?.click();
+  setFontManagerOpen(true);
   break;
 }
 
@@ -1328,6 +1443,11 @@ case 'delete':
   const bypassWarningsRef = useRef(false);
   const [dontShowExportWarnings, setDontShowExportWarnings] = useState<boolean>(() => localStorage.getItem('ldd_hide_export_warnings') === '1');
   const [pendingPreviewExport, setPendingPreviewExport] = useState<boolean | null>(null);
+	  // Export rename modal (white card)
+	  const pendingPdfRef = useRef<any>(null);
+	  const [renameModalOpen, setRenameModalOpen] = useState(false);
+	  const [renameDefault, setRenameDefault] = useState('export.pdf');
+	  const [renameValue, setRenameValue] = useState('');
 
   const handleExportPDF = async (preview: boolean) => {
     if (!bypassWarningsRef.current) {
@@ -1376,15 +1496,15 @@ case 'delete':
         });
       }
 
-      if (preview) window.open(pdf.output('bloburl'), '_blank');
-      else {
-        const defaultName = `${(config.content.title || 'export').replace(/\s+/g, '_')}.pdf`;
-        const requested = window.prompt('Name your exported PDF:', defaultName);
-        if (!requested) return;
-        const trimmed = requested.trim();
-        const safe = trimmed.toLowerCase().endsWith('.pdf') ? trimmed : `${trimmed}.pdf`;
-        pdf.save(safe);
-      }
+	      if (preview) {
+	        window.open(pdf.output('bloburl'), '_blank');
+	      } else {
+	        const defaultName = `${(config.content.title || 'export').replace(/\s+/g, '_')}.pdf`;
+	        pendingPdfRef.current = pdf;
+	        setRenameDefault(defaultName);
+	        setRenameValue(defaultName);
+	        setRenameModalOpen(true);
+	      }
     } catch (err) { console.error('Export failed:', err); } finally { canvas.style.transform = originalTransform; }
   };
 
@@ -1396,9 +1516,11 @@ case 'delete':
   const activeElementProps = selectedId ? (() => {
     const isExtra = isExtraLayer(selectedId);
     const target = isExtra ? config.layout.extraLayers.find(l => l.id === selectedId) : null;
-    const isText = isExtra ? (target?.type === 'text') : (['title', 'shortDesc', 'mainDesc', 'footer', 'promo', 'socials'].includes(selectedId));
+    const isText = isExtra ? (target?.type === 'text') : (['title', 'shortDesc', 'mainDesc', 'footer', 'promo', 'socials', 'button'].includes(selectedId));
     return { isExtra, target, isText };
   })() : null;
+
+  const canManageFonts = Boolean(activeElementProps?.isText);
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -1946,7 +2068,7 @@ const renderTipsPanel = () => {
   <button onClick={() => handleAction('sendToBack')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Send to Back"><ArrowDownToLine size={16}/></button>
   <button onClick={() => handleAction('bringToFront')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Bring to Front"><ArrowUpToLine size={16}/></button>
   <div className="w-px h-6 bg-slate-200 mx-2" />
-  <button onClick={() => handleAction('upload-font')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Upload Custom Font"><Upload size={16}/></button>
+  <button onClick={() => { if (canManageFonts) handleAction('upload-font'); }} disabled={!canManageFonts} className={`p-2 rounded-lg ${canManageFonts ? 'hover:bg-slate-100 text-slate-500' : 'text-slate-300 cursor-not-allowed'}`} title={canManageFonts ? 'Manage Fonts' : 'Select a text element to manage fonts'}><Upload size={16}/></button>
 </div>
 
 <div className="flex items-center gap-4 border-l pl-6 border-slate-200">
@@ -2016,8 +2138,8 @@ const renderTipsPanel = () => {
              </label>
 
              <div className="flex gap-3 mt-6">
-               <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); localStorage.removeItem('lavender_autosave'); setRestoreModal(false); }} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs hover:bg-slate-200">New Project</button>
-               <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); const data = localStorage.getItem('lavender_autosave'); if (data) setConfig(normalizeLoadedConfig(JSON.parse(data))); setRestoreModal(false); }} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-100">Resume</button>
+               <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); localStorage.removeItem('lavender_autosave'); setRestoreChoiceMade(true); setRestoreModal(false); }} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs hover:bg-slate-200">New Project</button>
+               <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); const data = localStorage.getItem('lavender_autosave'); if (data) setConfig(normalizeLoadedConfig(JSON.parse(data))); setRestoreChoiceMade(true); setRestoreModal(false); }} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-100">Resume</button>
              </div>
           </div>
         </div>
@@ -2082,6 +2204,175 @@ const renderTipsPanel = () => {
                 className="px-4 py-2 rounded-xl font-black text-xs bg-amber-600 text-white hover:bg-amber-700 shadow-lg shadow-amber-100"
               >
                 Export Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+	      {/* Rename exported PDF modal (white card) */}
+	      {renameModalOpen && (
+	        <div className="fixed inset-0 z-[235] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+	          <div className="bg-white rounded-[28px] p-7 max-w-md w-full shadow-2xl border border-slate-100">
+	            <div className="flex items-start gap-4">
+	              <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center shrink-0">
+	                <FileText className="text-indigo-700" size={24} />
+	              </div>
+	              <div className="flex-1">
+	                <h3 className="text-lg font-black text-slate-900">Name your PDF</h3>
+	                <p className="text-xs text-slate-600 mt-1">Rename it now, or skip and use the default.</p>
+	              </div>
+	              <button
+	                onClick={() => { setRenameModalOpen(false); pendingPdfRef.current = null; }}
+	                className="p-2 rounded-xl hover:bg-slate-100"
+	                title="Close"
+	              >
+	                <X size={18} />
+	              </button>
+	            </div>
+
+	            <div className="mt-4">
+	              <label className="text-[11px] font-black text-slate-700 uppercase">File name</label>
+	              <input
+	                value={renameValue}
+	                onChange={(e) => setRenameValue(e.target.value)}
+	                className="mt-2 w-full px-4 py-3 rounded-2xl border-2 border-slate-200 focus:outline-none focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 font-bold"
+	                placeholder={renameDefault}
+	              />
+	              <div className="text-[11px] text-slate-500 mt-2">Tip: “.pdf” will be added if you forget it.</div>
+	            </div>
+
+	            <div className="flex gap-3 mt-6">
+	              <button
+	                onClick={() => {
+	                  const pdf = pendingPdfRef.current;
+	                  if (!pdf) return;
+	                  const name = (renameDefault || 'export.pdf').trim();
+	                  const safe = name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`;
+	                  try { pdf.save(safe); } catch (e) { console.error(e); }
+	                  pendingPdfRef.current = null;
+	                  setRenameModalOpen(false);
+	                }}
+	                className="flex-1 py-3 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200"
+	              >
+	                Skip
+	              </button>
+	              <button
+	                onClick={() => {
+	                  const pdf = pendingPdfRef.current;
+	                  if (!pdf) return;
+	                  const raw = (renameValue || renameDefault || 'export.pdf').trim();
+	                  if (!raw) return;
+	                  const safe = raw.toLowerCase().endsWith('.pdf') ? raw : `${raw}.pdf`;
+	                  try { pdf.save(safe); } catch (e) { console.error(e); }
+	                  pendingPdfRef.current = null;
+	                  setRenameModalOpen(false);
+	                }}
+	                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-100 hover:bg-indigo-700"
+	              >
+	                Rename
+	              </button>
+	            </div>
+	          </div>
+	        </div>
+	      )}
+
+
+      {/* Font Manager modal (white card) */}
+      {fontManagerOpen && (
+        <div className="fixed inset-0 z-[236] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] p-7 max-w-xl w-full shadow-2xl border border-slate-100">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center shrink-0">
+                <Type className="text-emerald-700" size={24} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-black text-slate-900">Fonts</h3>
+                <p className="text-xs text-slate-600 mt-1">Install or remove custom fonts. These apply to the canvas only.</p>
+              </div>
+              <button
+                onClick={() => setFontManagerOpen(false)}
+                className="p-2 rounded-xl hover:bg-slate-100 text-slate-500"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-5 flex items-center justify-between gap-3">
+              <button
+                onClick={() => fontUploadRef.current?.click()}
+                className="px-4 py-2 rounded-xl font-black text-xs bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg shadow-emerald-100 inline-flex items-center gap-2"
+              >
+                <Upload size={16} />
+                Install Font
+              </button>
+
+              <div className="flex-1" />
+
+              <div className="w-full max-w-sm">
+                <label className="text-[11px] font-bold text-slate-700">Preview text</label>
+                <input
+                  value={fontPreviewText}
+                  onChange={(e) => setFontPreviewText(e.target.value)}
+                  className="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-emerald-200"
+                  placeholder="Type preview text…"
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                <div className="text-xs font-black text-slate-800">Installed Fonts</div>
+                <div className="text-[11px] text-slate-600">{customFontFamilies.length} total • {Array.from(usedFontsInDoc).filter(f => customFontFamilies.includes(f)).length} used</div>
+              </div>
+
+              <div className="max-h-[320px] overflow-auto">
+                {customFontFamilies.length === 0 ? (
+                  <div className="p-4 text-sm text-slate-600">
+                    No custom fonts installed yet. Click <span className="font-bold">Install Font</span> to add one.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {customFontFamilies.slice().reverse().map((fname) => (
+                      <div key={fname} className="p-4 flex items-start gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <div className="text-sm font-black text-slate-900 truncate">{fname}</div>
+                            {usedFontsInDoc.has(fname) && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800">Used</span>
+                            )}
+                          </div>
+                          <div
+                            className="mt-2 text-sm text-slate-800 bg-white rounded-xl border border-slate-100 p-3"
+                            style={{ fontFamily: fname }}
+                          >
+                            {fontPreviewText || ' '}
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => { if (!usedFontsInDoc.has(fname)) uninstallCustomFont(fname); }}
+                          disabled={usedFontsInDoc.has(fname)}
+                          className={`px-3 py-2 rounded-xl font-black text-xs bg-rose-600 text-white shadow-lg shadow-rose-100 inline-flex items-center gap-2 shrink-0 ${usedFontsInDoc.has(fname) ? 'opacity-40 cursor-not-allowed' : 'hover:bg-rose-700'}`}
+                          title="Uninstall font"
+                        >
+                          <Trash2 size={16} />
+                          Uninstall
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                onClick={() => setFontManagerOpen(false)}
+                className="px-4 py-2 rounded-xl font-black text-xs bg-slate-200 text-slate-800 hover:bg-slate-300"
+              >
+                Done
               </button>
             </div>
           </div>
@@ -2391,14 +2682,45 @@ const renderTipsPanel = () => {
             </DraggableBlock>
           ))}
           
-          <DraggableBlock id="button" config={config} updateConfig={updateConfig} visible={config.visibility.button} onSnap={setSnapLines} onSelect={selectElement} selectedIds={selectedIds} isSelected={selectedIds.includes('button')} isPrimary={selectedId === 'button'} onContextMenu={handleContextMenu} zoom={zoom}><div style={{ backgroundColor: config.colors.button, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="rounded-3xl shadow-xl overflow-hidden text-center font-black"><span style={{ fontSize: `${Math.min(config.layout.blocks.button.h * 0.4, 30)}px`, color: config.colors.buttonText }} className="px-4">Download Now</span></div></DraggableBlock>
+          <DraggableBlock id="button" config={config} updateConfig={updateConfig} visible={config.visibility.button} onSnap={setSnapLines} onSelect={selectElement} selectedIds={selectedIds} isSelected={selectedIds.includes('button')} isPrimary={selectedId === 'button'} onContextMenu={handleContextMenu} zoom={zoom}>
+            <div
+              style={{
+                backgroundColor: config.colors.button,
+                width: '100%',
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              className="rounded-3xl shadow-xl overflow-hidden"
+            >
+              <span
+                style={{
+                  width: '100%',
+                  display: 'block',
+                  padding: '0 16px',
+                  fontFamily: (config.fonts.blocks as any).button?.family ?? config.fonts.global,
+                  fontSize: `${(config.fonts.blocks as any).button?.size ?? Math.min(config.layout.blocks.button.h * 0.4, 30)}px`,
+                  color: (config.fonts.blocks as any).button?.color ?? config.colors.buttonText,
+                  fontWeight: (config.fonts.blocks as any).button?.bold ? 'bold' : 'normal',
+                  fontStyle: (config.fonts.blocks as any).button?.italic ? 'italic' : 'normal',
+                  textDecoration: (config.fonts.blocks as any).button?.underline ? 'underline' : 'none',
+                  textAlign: (config.fonts.blocks as any).button?.align ?? 'center',
+                  lineHeight: 1.05,
+                }}
+              >
+                Download Now
+              </span>
+            </div>
+          </DraggableBlock>
           <DraggableBlock id="qr" config={config} updateConfig={updateConfig} visible={config.visibility.qr && !!config.source.link} onSnap={setSnapLines} onSelect={selectElement} selectedIds={selectedIds} isSelected={selectedIds.includes('qr')} isPrimary={selectedId === 'qr'} onContextMenu={handleContextMenu} zoom={zoom}><img src={getQRUrl()} className="w-full h-full object-contain pointer-events-none" /></DraggableBlock>
           
           <DraggableBlock id="promo" config={config} updateConfig={updateConfig} visible={config.visibility.promo && config.promo.enabled} onSnap={setSnapLines} onSelect={selectElement} selectedIds={selectedIds} isSelected={selectedIds.includes('promo')} isPrimary={selectedId === 'promo'} onContextMenu={handleContextMenu} zoom={zoom}>
             <div 
               style={{ 
                 backgroundColor: (config.colors as any).promoBg ?? config.colors.accent, 
-                color: config.fonts.blocks.promo.color,
+	                color: config.fonts.blocks.promo.color,
+	                fontFamily: config.fonts.blocks.promo.family,
                 fontWeight: config.fonts.blocks.promo.bold ? 'bold' : 'normal',
                 fontStyle: config.fonts.blocks.promo.italic ? 'italic' : 'normal',
                 textDecoration: config.fonts.blocks.promo.underline ? 'underline' : 'none',
@@ -2406,8 +2728,8 @@ const renderTipsPanel = () => {
               }} 
               className="w-full h-full rounded-[40px] p-6 flex flex-col items-center justify-center gap-1 shadow-2xl overflow-hidden text-center border-4 border-white/20"
             >
-              <span className="uppercase opacity-70 block" style={{ fontSize: `${config.layout.blocks.promo.h * 0.08}px` }}>{config.promo.title}</span>
-              <span className="tracking-tighter leading-none block font-black" style={{ fontSize: `${config.layout.blocks.promo.h * 0.25}px` }}>{config.promo.code}</span>
+              <span className="uppercase opacity-70 block" style={{ fontSize: `${Math.max(10, config.fonts.blocks.promo.size * 0.9)}px` }}>{config.promo.title}</span>
+              <span className="tracking-tighter leading-none block font-black" style={{ fontSize: `${Math.max(14, config.fonts.blocks.promo.size * 2.0)}px` }}>{config.promo.code}</span>
               <span className="opacity-90 block" style={{ fontSize: `${config.layout.blocks.promo.h * 0.08}px` }}>{config.promo.description}</span>
             </div>
           </DraggableBlock>
