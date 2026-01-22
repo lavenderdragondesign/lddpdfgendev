@@ -10,8 +10,9 @@ import {
   RotateCw, Copy, Scissors, Clipboard, Undo2, Redo2, Layers, Eye,
   Link as LinkIcon, HardDrive, Cloud, Sun, Moon, Info, MousePointer2, Move,
   Maximize, Upload, Link as LinkIcon2, CloudDrizzle, ShoppingBag as ShopifyIcon, Laptop,
-  Layout, Minimize2, ChevronRight, ChevronDown, EyeOff, Search, QrCode, Heart, Coffee, FolderOpen,
-  Waves, MousePointer, FileJson, Bold, Italic, Underline, ChevronLeft
+  Layout, Minimize2, ChevronRight, ChevronDown, ChevronUp, EyeOff, Search, QrCode, Heart, Coffee, FolderOpen,
+  Waves, MousePointer, FileJson, Sparkles, Bold, Italic, Underline, ChevronLeft,
+  ArrowUpToLine, ArrowDownToLine, ArrowUp, ArrowDown
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
@@ -95,6 +96,8 @@ const INITIAL_CONFIG: PDFConfig = {
       socials: { x: 118, y: 995, w: 580, h: 40 }
     },
     extraLayers: []
+      ,
+    zIndex: {}
   }
 };
 
@@ -342,7 +345,7 @@ const DraggableBlock: React.FC<{
         onDoubleClick?.();
       }}
       onContextMenu={(e) => onContextMenu(e, id, isExtra)}
-      style={{ left: block.x, top: block.y, width: block.w, height: block.h, zIndex: isDragging || resizeHandle ? 60 : 10 }}
+      style={{ left: block.x, top: block.y, width: block.w, height: block.h, zIndex: (isDragging || resizeHandle) ? 60 : (config.layout.zIndex?.[id] ?? 10) }}
     >
       <div className={`relative w-full h-full flex items-center justify-center ${(!isSelected) ? 'group-hover:ring-2 group-hover:ring-blue-500 group-hover:ring-offset-1' : ''}`}>
         <div className={`w-full h-full flex items-center justify-center overflow-hidden`}>
@@ -368,10 +371,15 @@ const DraggableBlock: React.FC<{
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<EditorTab>(EditorTab.SOURCE);
+
+  const [customFontFamilies, setCustomFontFamilies] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('ldd_custom_fonts') || '[]'); } catch { return []; }
+  });
   const [config, setConfig] = useState<PDFConfig>(INITIAL_CONFIG);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const fontUploadRef = useRef<HTMLInputElement>(null);
   const [marquee, setMarquee] = useState<null | { x0: number; y0: number; x1: number; y1: number; additive: boolean }>(null);
 
   const getGroupByMember = useCallback((id: string) => {
@@ -404,7 +412,15 @@ const App: React.FC = () => {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [restoreModal, setRestoreModal] = useState(false);
   const [dontShowAgain, setDontShowAgain] = useState(false);
-  const [isTipsMinimized, setIsTipsMinimized] = useState(true);
+
+// Tips panel (docked on the right side of the editor viewport)
+const TIPS_OPEN_KEY = 'ldd_pdfgen_tips_panel_open_v1';
+const [tipsOpen, setTipsOpen] = useState<boolean>(() => {
+  const v = localStorage.getItem(TIPS_OPEN_KEY);
+  // Open by default (only respect stored value if present)
+  return v == null ? true : v === '1';
+});
+const [tipsSection, setTipsSection] = useState<EditorTab | 'CANVAS'>(EditorTab.SOURCE);
   const [isSidebarMinimized, setIsSidebarMinimized] = useState(false);
   const [contextMenu, setContextMenu] = useState<null | {
     id: string;
@@ -420,8 +436,24 @@ const App: React.FC = () => {
   const [clipboard, setClipboard] = useState<any>(null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [savedPresets, setSavedPresets] = useState<{name: string, config: PDFConfig}[]>(() => {
+  try {
     return JSON.parse(localStorage.getItem('lavender_presets') || '[]');
-  });
+  } catch {
+    return [];
+  }
+});
+
+
+// Tips panel persistence + auto-section switching
+useEffect(() => {
+  localStorage.setItem(TIPS_OPEN_KEY, tipsOpen ? '1' : '0');
+}, [tipsOpen]);
+
+useEffect(() => {
+  // When the user changes the main editor tab, automatically switch the tips section too.
+  setTipsSection(activeTab);
+}, [activeTab]);
+
 
   // Close context menu on scroll/zoom/resize so it doesn't stay open while the viewport changes.
   useEffect(() => {
@@ -754,6 +786,40 @@ const App: React.FC = () => {
     localStorage.setItem('lavender_presets', JSON.stringify(newPresets));
   };
 
+const handleUploadFont = useCallback(async (file: File) => {
+  if (!file) return;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (!['ttf','otf','woff','woff2'].includes(ext)) return;
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+  const fontName = `${baseName}-${Date.now()}`;
+  try {
+    const data = await file.arrayBuffer();
+    // @ts-ignore
+    const fontFace = new FontFace(fontName, data);
+    await fontFace.load();
+    // @ts-ignore
+    document.fonts.add(fontFace);
+    setCustomFontFamilies(prev => {
+      const next = prev.includes(fontName) ? prev : [...prev, fontName];
+      try { localStorage.setItem('ldd_custom_fonts', JSON.stringify(next)); } catch {}
+      return next;
+    });
+    // Apply to selected element if it supports fonts
+    if (selectedId) {
+      const isExtra = isExtraLayer(selectedId);
+      if (isExtra) {
+        updateConfig('layout.extraLayers', config.layout.extraLayers.map(l => l.id === selectedId ? { ...l, fontFamily: fontName } : l));
+      } else {
+        updateConfig(`fonts.blocks.${selectedId}.family`, fontName);
+      }
+    }
+  } catch (e) {
+    console.error('Font upload failed', e);
+  }
+}, [selectedId, config.layout.extraLayers, updateConfig]);
+
+
+
   const handleAction = useCallback((action: string) => {
     const id = contextMenu?.id || selectedId;
     // Built-in blocks that should NOT be copyable/duplicable.
@@ -967,7 +1033,32 @@ const App: React.FC = () => {
           }
         }
         break;
-      case 'delete':
+
+case 'bringToFront':
+case 'sendToBack':
+case 'moveForward':
+case 'moveBackward': {
+  if (!id) break;
+  const z = { ...(config.layout.zIndex || {}) };
+  const values = Object.values(z);
+  const maxZ = values.length ? Math.max(...(values as number[])) : 10;
+  const minZ = values.length ? Math.min(...(values as number[])) : 10;
+  const current = (z[id] ?? 10);
+  if (action === 'bringToFront') z[id] = maxZ + 1;
+  else if (action === 'sendToBack') z[id] = minZ - 1;
+  else if (action === 'moveForward') z[id] = current + 1;
+  else if (action === 'moveBackward') z[id] = current - 1;
+  updateConfig('layout.zIndex', z);
+  break;
+}
+case 'upload-font': {
+  // triggers hidden file input
+  fontUploadRef.current?.click();
+  break;
+}
+
+case 'delete':
+
         if (!editingId) {
           const ids = selectedIds.length ? selectedIds : (id ? [id] : []);
           if (ids.length) {
@@ -1286,7 +1377,14 @@ const App: React.FC = () => {
       }
 
       if (preview) window.open(pdf.output('bloburl'), '_blank');
-      else pdf.save(`${(config.content.title || 'export').replace(/\s+/g, '_')}.pdf`);
+      else {
+        const defaultName = `${(config.content.title || 'export').replace(/\s+/g, '_')}.pdf`;
+        const requested = window.prompt('Name your exported PDF:', defaultName);
+        if (!requested) return;
+        const trimmed = requested.trim();
+        const safe = trimmed.toLowerCase().endsWith('.pdf') ? trimmed : `${trimmed}.pdf`;
+        pdf.save(safe);
+      }
     } catch (err) { console.error('Export failed:', err); } finally { canvas.style.transform = originalTransform; }
   };
 
@@ -1591,9 +1689,191 @@ const App: React.FC = () => {
   };
 
   const activeFont = getActiveFont();
+// --- Tips Panel (Docked) ---
+const tipsTabs = useMemo(() => {
+  return [
+    { id: EditorTab.SOURCE as const, label: 'Source' },
+    { id: EditorTab.ASSETS as const, label: 'Layers' },
+    { id: EditorTab.CONTENT as const, label: 'Content' },
+    { id: EditorTab.PROMO as const, label: 'Offer' },
+    { id: EditorTab.SOCIALS as const, label: 'Social' },
+    { id: EditorTab.COLORS as const, label: 'Colors' },
+    { id: EditorTab.PRESETS as const, label: 'Project' },
+  ];
+}, []);
+
+const tipsBySection = useMemo(() => {
+  const base: Record<string, { title: string; tips: Array<{ icon: any; text: string }> }> = {
+    [EditorTab.SOURCE]: {
+      title: 'Source Tips',
+      tips: [
+        { icon: Upload, text: 'Upload your original MyDesigns Download.pdf to auto-extract the embedded download link.' },
+        { icon: LinkIcon, text: 'Manual link mode is perfect for Google Drive / OneDrive / Shopify links.' },
+      ],
+    },
+    [EditorTab.ASSETS]: {
+      title: 'Layers Tips',
+      tips: [
+        { icon: Layers, text: 'Add extra text/image layers for watermarks, badges, and callouts.' },
+        { icon: Layout, text: 'Right-click → Bring to Front / Send to Back to fix overlaps instantly.' },
+        { icon: Layers, text: 'Ctrl/Cmd + G groups • Ctrl/Cmd + Shift + G ungroups.' },
+      ],
+    },
+    [EditorTab.CONTENT]: {
+      title: 'Content Tips',
+      tips: [
+        { icon: Type, text: 'Double-click a custom text layer to edit it inline on the canvas.' },
+        { icon: AlignCenter, text: 'Use the top toolbar for alignment and text styling on selected blocks.' },
+        { icon: Info, text: 'Custom font upload applies to canvas text only (UI fonts stay unchanged).' },
+      ],
+    },
+    [EditorTab.PROMO]: {
+      title: 'Offer Tips',
+      tips: [
+        { icon: Tag, text: 'Promo background is independent from your download button color.' },
+        { icon: QrCode, text: 'QR can link to your download or your shop — great for mobile buyers.' },
+        { icon: Layout, text: 'Right-click the promo block to move it behind/in front of other elements.' },
+      ],
+    },
+    [EditorTab.SOCIALS]: {
+      title: 'Social Tips',
+      tips: [
+        { icon: Share2, text: 'Add socials only if you want repeat buyers — keep it minimal & clean.' },
+        { icon: Globe, text: 'Use website/shop links for Shopify or standalone stores.' },
+        { icon: QrCode, text: 'Turn on a QR if your audience is mostly mobile.' },
+      ],
+    },
+    [EditorTab.COLORS]: {
+      title: 'Colors Tips',
+      tips: [
+        { icon: Palette, text: 'Button text color only affects the download button (promo is separate).' },
+        { icon: FileText, text: 'Pure white backgrounds export cleanest for Etsy buyer printing.' },
+        { icon: Layout, text: 'Use contrast: dark text + light background reads best on phones.' },
+      ],
+    },
+    [EditorTab.PRESETS]: {
+      title: 'Project Tips',
+      tips: [
+        { icon: Save, text: 'Save presets for different product types (PNG bundle, SVG, Canva, etc.).' },
+        { icon: FileJson, text: 'Save/Load JSON lets you move projects between computers.' },
+        { icon: Sparkles, text: 'Use “What’s New” to see the latest features anytime.' },
+      ],
+    },
+    CANVAS: {
+      title: 'Canvas Tips',
+      tips: [
+        { icon: MousePointer2, text: 'Scroll to zoom • Space + drag to pan.' },
+        { icon: MousePointer2, text: 'Drag on empty space to box-select.' },
+        { icon: MousePointer2, text: 'Esc clears selection & closes menus.' },
+      ],
+    },
+  };
+
+  if (selectedId) {
+    const sectionKey = tipsSection === 'CANVAS' ? 'CANVAS' : tipsSection;
+    const label = selectedId.startsWith('text-') ? 'Text Layer' : selectedId;
+    base[sectionKey] = {
+      ...base[sectionKey],
+      tips: [
+        { icon: Info, text: `Selected: ${label}. Right-click it for actions (align, duplicate, layer order, custom fonts, etc.).` },
+        ...base[sectionKey].tips,
+      ],
+    };
+  }
+
+  return base;
+}, [selectedId, tipsSection]);
+
+const renderTipsPanel = () => {
+  if (!tipsOpen) {
+    return (
+      <div className="absolute top-20 right-6 z-[80]">
+        <button
+          onClick={() => setTipsOpen(true)}
+          className="flex items-center gap-2 px-3 py-2 rounded-2xl bg-white border-2 border-slate-200 text-slate-900 shadow-xl hover:border-indigo-200 hover:text-indigo-600 transition-all text-[10px] font-black uppercase tracking-widest"
+          title="Open Tips"
+        >
+          <Info size={14} /> Tips
+        </button>
+      </div>
+    );
+  }
+
+  const key = tipsSection === 'CANVAS' ? 'CANVAS' : tipsSection;
+  const payload = tipsBySection[key];
+
+  return (
+    <div className="absolute top-20 right-6 bottom-6 w-[360px] z-[80]">
+      <div className="h-full bg-white border-2 border-slate-200 rounded-[28px] shadow-2xl overflow-hidden flex flex-col">
+        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-9 h-9 rounded-2xl bg-indigo-50 flex items-center justify-center">
+              <Info className="text-indigo-600" size={18} />
+            </div>
+            <div>
+              <div className="text-[11px] font-black uppercase tracking-widest text-slate-900">Editor Tips</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Auto-switches with tabs</div>
+            </div>
+          </div>
+          <button
+            onClick={() => setTipsOpen(false)}
+            className="p-2 rounded-2xl hover:bg-slate-100 text-slate-500"
+            title="Close Tips"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="px-4 pt-3">
+          <div className="flex flex-wrap gap-2">
+            {tipsTabs.map(t => (
+              <button
+                key={t.id}
+                onClick={() => setTipsSection(t.id)}
+                className={`px-3 py-2 rounded-2xl border text-[10px] font-black uppercase tracking-widest transition-all ${tipsSection === t.id ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:text-indigo-600'}`}
+                title={t.label}
+              >
+                {t.label}
+              </button>
+            ))}
+            <button
+              onClick={() => setTipsSection('CANVAS')}
+              className={`px-3 py-2 rounded-2xl border text-[10px] font-black uppercase tracking-widest transition-all ${tipsSection === 'CANVAS' ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:text-indigo-600'}`}
+              title="Canvas"
+            >
+              Canvas
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+          <div className="text-xs font-black text-slate-900 mb-3">{payload?.title || 'Tips'}</div>
+          <ul className="space-y-3">
+            {payload?.tips?.map((t, idx) => (
+              <li key={idx} className="flex gap-3 items-start">
+                <div className="w-8 h-8 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-center shrink-0">
+                  {t.icon ? React.createElement(t.icon, { size: 14, className: 'text-slate-700' }) : <Info size={14} className="text-slate-700" />}
+                </div>
+                <div className="text-[11px] font-semibold text-slate-700 leading-snug">{t.text}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="p-4 border-t border-slate-100 bg-slate-50">
+          <div className="text-[10px] font-bold text-slate-500">
+            Pro tip: If something is hidden, use <span className="font-black text-slate-700">Bring to Front</span>.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 
   return (
     <div className="h-screen w-screen flex bg-slate-100 font-sans transition-colors overflow-hidden">
+      <input ref={fontUploadRef} type="file" accept=".ttf,.otf,.woff,.woff2" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUploadFont(f); e.currentTarget.value = ''; }} />
       {/* CONTEXTUAL TOOLBAR */}
       <div className={`fixed top-0 left-0 right-0 h-16 bg-white/95 backdrop-blur-2xl border-b border-slate-200 z-[100] flex items-center px-8 gap-6 shadow-xl no-print transition-transform duration-300 ${selectedId ? 'translate-y-0' : '-translate-y-full'}`}>
         {activeElementProps && (
@@ -1615,7 +1895,7 @@ const App: React.FC = () => {
                       else updateConfig(`fonts.blocks.${selectedId}.family`, e.target.value);
                     }}
                   >
-                    {FONT_FAMILIES.map(ff => <option key={ff} value={ff}>{ff}</option>)}
+                    {[...FONT_FAMILIES, ...customFontFamilies].map(ff => <option key={ff} value={ff}>{ff}</option>)}
                   </select>
                 </div>
 
@@ -1655,7 +1935,21 @@ const App: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="flex items-center gap-4 border-l pl-6 border-slate-200">
+                
+
+{/* GROUP: Align + Layer Order + Custom Font Upload */}
+<div className="flex items-center gap-1 border-l pl-6 border-slate-200">
+  <button onClick={() => handleAction('align-left')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Align Left"><AlignLeft size={16}/></button>
+  <button onClick={() => handleAction('align-center')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Align Center"><AlignCenter size={16}/></button>
+  <button onClick={() => handleAction('align-right')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Align Right"><AlignRight size={16}/></button>
+  <div className="w-px h-6 bg-slate-200 mx-2" />
+  <button onClick={() => handleAction('sendToBack')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Send to Back"><ArrowDownToLine size={16}/></button>
+  <button onClick={() => handleAction('bringToFront')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Bring to Front"><ArrowUpToLine size={16}/></button>
+  <div className="w-px h-6 bg-slate-200 mx-2" />
+  <button onClick={() => handleAction('upload-font')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Upload Custom Font"><Upload size={16}/></button>
+</div>
+
+<div className="flex items-center gap-4 border-l pl-6 border-slate-200">
                   <input 
                     type="color" 
                     className="w-6 h-6 rounded-full border border-slate-200 cursor-pointer overflow-hidden" 
@@ -2016,8 +2310,6 @@ const App: React.FC = () => {
         onMouseMove={handleCanvasMouseMove}
         onMouseUp={handleCanvasMouseUp}
         onContextMenu={(e) => handleContextMenu(e, 'canvas', false)}
-        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleFileUpload(e as any, 'source'); }}
       >
         
         <div className="no-print absolute top-4 right-4 z-50">
@@ -2031,6 +2323,8 @@ const App: React.FC = () => {
           </button>
         </div>
         <div className="absolute inset-0 dashed-grid pointer-events-none opacity-50" />
+        {/* Tips panel lives in the unused right-side space of the editor viewport */}
+        {renderTipsPanel()}
         <div
           id="pdf-canvas"
           ref={canvasRef}
@@ -2166,19 +2460,6 @@ const App: React.FC = () => {
            <div className="w-px h-8 bg-slate-200 mx-1"></div>
            <div className="px-4 font-black text-slate-900 text-xs min-w-[60px] text-center">{Math.round(zoom * 100)}%</div>
            <button onClick={() => { setZoom(0.65); setOffset({ x: 0, y: 0 }); }} className="p-3 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 active:scale-90 transition-all"><Maximize size={20} /></button>
-        </div>
-        <div className={`fixed bottom-10 right-10 bg-white border-2 border-slate-200 p-6 rounded-[30px] shadow-2xl z-[60] transition-all duration-300 ${isTipsMinimized ? 'w-16 h-16 p-0 overflow-hidden flex items-center justify-center cursor-pointer' : 'w-72 h-auto'}`} onClick={() => isTipsMinimized && setIsTipsMinimized(false)}>
-           {!isTipsMinimized ? (<><div className="flex items-center justify-between mb-3"><div className="flex items-center gap-3"><Info className="text-indigo-600" size={20} /><span className="text-xs font-black uppercase text-slate-900 tracking-widest">Editor Tips</span></div><button onClick={(e) => { e.stopPropagation(); setIsTipsMinimized(true); }} className="p-1 hover:bg-slate-100 rounded-lg"><Minimize2 size={16}/></button></div><ul className="text-[10px] font-black text-slate-500 space-y-3">
-  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Scroll to Zoom</li>
-  <li className="flex items-center gap-2"><Move size={12}/> Space + Drag to Pan</li>
-  <li className="flex items-center gap-2"><Layout size={12}/> Click sidebar to start</li>
-  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Shift + Click to add items</li>
-  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Ctrl/Cmd + Click to toggle items</li>
-  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Drag on empty space to box-select</li>
-  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Ctrl/Cmd + Drag to add with box-select</li>
-  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Ctrl/Cmd + G group • Ctrl/Cmd + Shift + G ungroup</li>
-  <li className="flex items-center gap-2"><MousePointer2 size={12}/> Esc clears selection & closes menus</li>
-</ul></>) : (<Info className="text-indigo-600" size={24} />)}
         </div>
       </div>
 
@@ -2338,6 +2619,44 @@ const App: React.FC = () => {
                 </div>
 
                 <div className="h-px bg-slate-100 my-1" />
+
+                {/* GROUP: Layer Order */}
+                <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Layer Order</div>
+                <button
+                  onClick={() => handleAction('bringToFront')}
+                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                >
+                  <ArrowUpToLine size={16} /> Bring to Front
+                </button>
+                <button
+                  onClick={() => handleAction('sendToBack')}
+                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                >
+                  <ArrowDownToLine size={16} /> Send to Back
+                </button>
+                <button
+                  onClick={() => handleAction('moveForward')}
+                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                >
+                  <ArrowUp size={16} /> Move Forward
+                </button>
+                <button
+                  onClick={() => handleAction('moveBackward')}
+                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                >
+                  <ArrowDown size={16} /> Move Backward
+                </button>
+
+                <div className="h-px bg-slate-100 my-1" />
+
+                {/* GROUP: Fonts */}
+                <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Fonts</div>
+                <button
+                  onClick={() => handleAction('upload-font')}
+                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
+                >
+                  <Upload size={16} /> Upload Custom Font
+                </button>
 
                 {/* GROUP: Edit */}
                 <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Edit</div>
