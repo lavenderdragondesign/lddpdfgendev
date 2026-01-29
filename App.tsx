@@ -1449,6 +1449,388 @@ case 'delete':
 	  const [renameDefault, setRenameDefault] = useState('export.pdf');
 	  const [renameValue, setRenameValue] = useState('');
 
+  
+  // --- Export font stabilization ---
+  // html2canvas can capture before custom fonts finish loading, which causes kerning/spacing glitches (especially script fonts).
+  // Export helpers: foreignObjectRendering improves script-font kerning, but can produce white captures
+// if any image/CSS is incompatible. We detect that and fall back automatically.
+const isCanvasMostlyBlank = (c: HTMLCanvasElement) => {
+  try {
+    const ctx = c.getContext('2d');
+    if (!ctx) return true;
+    const w = c.width, h = c.height;
+    if (!w || !h) return true;
+    const xs = [0, Math.floor(w*0.25), Math.floor(w*0.5), Math.floor(w*0.75), w-1].filter(x => x >= 0 && x < w);
+    const ys = [0, Math.floor(h*0.25), Math.floor(h*0.5), Math.floor(h*0.75), h-1].filter(y => y >= 0 && y < h);
+    let nonEmpty = 0;
+    for (const y of ys) for (const x of xs) {
+      const d = ctx.getImageData(x, y, 1, 1).data;
+      // Any non-transparent, non-white pixel counts as content.
+      if (d[3] > 0 && !(d[0] === 255 && d[1] === 255 && d[2] === 255)) nonEmpty++;
+    }
+    return nonEmpty === 0;
+  } catch {
+    return true;
+  }
+};
+
+const renderElementForExport = async (el: HTMLElement, bg: string) => {
+  const baseOpts: any = {
+    useCORS: true,
+    scale: 2,
+    backgroundColor: bg,
+    letterRendering: false,
+  };
+
+  try {
+    const c1 = await html2canvas(el, { ...baseOpts, foreignObjectRendering: true });
+    if (!isCanvasMostlyBlank(c1)) return c1;
+  } catch {
+    // fall through
+  }
+
+  // Fallback path (more compatible)
+  return await html2canvas(el, { ...baseOpts, foreignObjectRendering: false });
+};
+
+  const ensureFontsLoadedForExport = async () => {
+    try {
+      const families = new Set<string>();
+      const safeAdd = (v: any) => {
+        const s = (v || '').toString().trim();
+        if (!s) return;
+        families.add(s.replace(/^['"]|['"]$/g, ''));
+      };
+
+      safeAdd((config.fonts as any)?.global);
+      const blocks = (config.fonts as any)?.blocks || {};
+      Object.values(blocks).forEach((f: any) => safeAdd(f?.family));
+      (config.layout?.extraLayers || []).forEach((l: any) => safeAdd(l?.fontFamily));
+
+      // Kick the browser into actually loading fonts we're about to screenshot.
+      const loaders: Promise<any>[] = [];
+      families.forEach(f => {
+        // Trigger multiple style/weight variants; export capture is sensitive to late font metric swaps.
+        // @ts-ignore
+        loaders.push(document.fonts.load(`normal 16px "${f}"`, 'AaBbCcDdEeFf 0123456789'));
+        // @ts-ignore
+        loaders.push(document.fonts.load(`bold 16px "${f}"`, 'AaBbCcDdEeFf 0123456789'));
+        // @ts-ignore
+        loaders.push(document.fonts.load(`italic 16px "${f}"`, 'AaBbCcDdEeFf 0123456789'));
+        // @ts-ignore
+        loaders.push(document.fonts.load(`italic bold 16px "${f}"`, 'AaBbCcDdEeFf 0123456789'));
+        // Also load at typical headline/button sizes
+        // @ts-ignore
+        loaders.push(document.fonts.load(`normal 28px "${f}"`, 'Download Now'));
+        // @ts-ignore
+        loaders.push(document.fonts.load(`bold 28px "${f}"`, 'Download Now'));
+        // @ts-ignore
+        loaders.push(document.fonts.load(`italic 28px "${f}"`, 'Download Now'));
+      });
+
+      await Promise.allSettled(loaders);
+      // @ts-ignore
+      await document.fonts.ready;
+    } catch {
+      // If fonts API isn't available, we still export — just without the stabilization.
+    }
+  };
+
+
+  // --- Export-only text overlay for the download button ---
+  // html2canvas can mis-measure text metrics (especially script fonts), causing labels to look off-center in the exported PDF.
+  // For export, we temporarily replace the button label with a canvas-rendered image whose text is centered via canvas APIs.
+  const applyButtonLabelExportOverlay = async (): Promise<null | (() => void)> => {
+    try {
+      const btnBlock = document.querySelector('[data-ldd-block="button"]') as HTMLElement | null;
+      if (!btnBlock) return null;
+
+      const labelEl = btnBlock.querySelector('[data-ldd-button-label="1"]') as HTMLElement | null;
+      if (!labelEl) return null;
+
+      // Use offset sizes (layout sizes) for stability; getBoundingClientRect can be fractional under zoom/transform.
+      const w = btnBlock.offsetWidth;
+      const h = btnBlock.offsetHeight;
+      if (w < 2 || h < 2) return null;
+
+      // High-res overlay so it stays crisp after html2canvas capture.
+      const SCALE = 4;
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, w * SCALE);
+      c.height = Math.max(1, h * SCALE);
+      const ctx = c.getContext('2d');
+      if (!ctx) return null;
+
+      const cs = window.getComputedStyle(labelEl);
+      const fontStyle = cs.fontStyle || 'normal';
+      const fontWeight = cs.fontWeight || '400';
+      const fontFamily = cs.fontFamily || 'sans-serif';
+      const fontSize = parseFloat(cs.fontSize || '24');
+      const fill = cs.color || '#ffffff';
+      const text = (labelEl.textContent || 'Download Now').trim();
+
+      // Extra safety: ensure the exact face is resolved before drawing.
+      try {
+        // @ts-ignore
+        if (document.fonts && document.fonts.load) {
+          // Load a few variants to avoid late face swaps (script fonts are notorious).
+          // @ts-ignore
+          await Promise.allSettled([
+            document.fonts.load(`${fontStyle} ${fontWeight} ${Math.max(10, Math.round(fontSize))}px ${fontFamily}`, text),
+            document.fonts.load(`normal 400 ${Math.max(10, Math.round(fontSize))}px ${fontFamily}`, text),
+            document.fonts.load(`italic 400 ${Math.max(10, Math.round(fontSize))}px ${fontFamily}`, text),
+            document.fonts.load(`normal 700 ${Math.max(10, Math.round(fontSize))}px ${fontFamily}`, text),
+          ]);
+          // @ts-ignore
+          await document.fonts.ready;
+        }
+      } catch {
+        // proceed anyway
+      }
+
+      // Draw in CSS pixel space (scale up canvas for fidelity).
+      ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic'; // we'll compute baseline manually
+      ctx.fillStyle = fill;
+      ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
+
+      // True visual centering using font metrics when available.
+      const metrics = ctx.measureText(text);
+      const ascent = (metrics as any).actualBoundingBoxAscent ?? fontSize * 0.8;
+      const descent = (metrics as any).actualBoundingBoxDescent ?? fontSize * 0.2;
+
+      const x = w / 2;
+      const y = (h + ascent - descent) / 2;
+
+      ctx.fillText(text, x, y);
+
+      const img = document.createElement('img');
+      img.src = c.toDataURL('image/png');
+      img.alt = text;
+      img.style.position = 'absolute';
+      img.style.left = '0';
+      img.style.top = '0';
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.pointerEvents = 'none';
+      img.style.zIndex = '5';
+
+      // Prevent export-time clipping caused by border-radius + overflow hidden masking (html2canvas).
+      const prevOverflow = btnBlock.style.overflow;
+      const prevRadius = btnBlock.style.borderRadius;
+      btnBlock.style.overflow = 'visible';
+      btnBlock.style.borderRadius = '0';
+
+      const prevVisibility = labelEl.style.visibility;
+      labelEl.style.visibility = 'hidden';
+      btnBlock.appendChild(img);
+
+      return () => {
+        try {
+          img.remove();
+          labelEl.style.visibility = prevVisibility;
+          btnBlock.style.overflow = prevOverflow;
+          btnBlock.style.borderRadius = prevRadius;
+        } catch {}
+      };
+    } catch {
+      return null;
+    }
+  
+  };
+
+  // --- Export-only overlays for custom/script-font text blocks ---
+  // html2canvas can mangle kerning/spacing for some custom/script fonts. For export, we temporarily replace
+  // the live text with a canvas-rendered image that uses the browser's text rasterizer (more reliable).
+  const applyCustomFontTextExportOverlays = async (): Promise<null | (() => void)> => {
+    try {
+      const root = document.getElementById('pdf-canvas') as HTMLElement | null;
+      if (!root) return null;
+
+      const SAFE_FONTS = new Set([
+        'inter', 'arial', 'helvetica', 'sans-serif', 'serif', 'monospace', 'system-ui', 'ui-sans-serif', 'ui-serif', 'ui-monospace',
+        'segoe ui', 'roboto', 'times new roman', 'georgia', 'courier new'
+      ]);
+
+      const cleanups: Array<() => void> = [];
+
+      const parsePx = (v: string) => {
+        const n = parseFloat((v || '0').toString());
+        return Number.isFinite(n) ? n : 0;
+      };
+
+      const getPrimaryFamily = (ff: string) => {
+        const s = (ff || '').split(',')[0] || '';
+        return s.trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+      };
+
+      const drawWrapped = (ctx: CanvasRenderingContext2D, text: string, boxW: number, boxH: number, padL: number, padT: number, padR: number, padB: number, align: 'left'|'center'|'right', lineHeight: number) => {
+        const maxW = Math.max(1, boxW - padL - padR);
+        const maxH = Math.max(1, boxH - padT - padB);
+
+        const paragraphs = (text || '').replace(/\r\n/g, '\n').split('\n');
+
+        const linesOut: string[] = [];
+        for (const p of paragraphs) {
+          const words = (p || '').split(/\s+/).filter(Boolean);
+          if (!words.length) {
+            linesOut.push('');
+            continue;
+          }
+          let line = words[0];
+          for (let i = 1; i < words.length; i++) {
+            const test = line + ' ' + words[i];
+            if (ctx.measureText(test).width <= maxW) {
+              line = test;
+            } else {
+              linesOut.push(line);
+              line = words[i];
+            }
+          }
+          linesOut.push(line);
+        }
+
+        // Vertical centering: keep the same visual "centered block" feel for most of your text areas.
+        const totalH = linesOut.length * lineHeight;
+        let y = padT + Math.max(0, (maxH - totalH) / 2) + lineHeight * 0.85;
+
+        for (const line of linesOut) {
+          let x = padL;
+          if (align === 'center') x = padL + maxW / 2;
+          if (align === 'right') x = padL + maxW;
+          ctx.textAlign = align;
+          ctx.fillText(line, x, y);
+          y += lineHeight;
+          if (y > boxH - padB) break;
+        }
+      };
+
+      // Candidate elements: leaf-ish blocks with text content inside the export canvas.
+      const candidates = Array.from(root.querySelectorAll('div, span, p')) as HTMLElement[];
+
+      for (const el of candidates) {
+        // Ignore if it contains other element nodes (we only want simple text containers)
+        const hasElementChildren = Array.from(el.childNodes).some(n => n.nodeType === 1);
+        if (hasElementChildren) continue;
+
+        const text = (el.innerText || '').trim();
+        if (!text) continue;
+
+        const cs = window.getComputedStyle(el);
+        const primary = getPrimaryFamily(cs.fontFamily);
+        if (!primary || SAFE_FONTS.has(primary)) continue;
+
+        // Skip super tiny or hidden stuff
+        if (el.offsetWidth < 10 || el.offsetHeight < 10) continue;
+        if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue;
+
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+
+        // Prepare canvas
+        const c = document.createElement('canvas');
+        const scale = 2;
+        c.width = Math.max(1, Math.round(w * scale));
+        c.height = Math.max(1, Math.round(h * scale));
+
+        const ctx = c.getContext('2d');
+        if (!ctx) continue;
+
+        ctx.scale(scale, scale);
+        ctx.clearRect(0, 0, w, h);
+
+        const fontSize = parsePx(cs.fontSize) || 16;
+        const fontStyle = (cs.fontStyle || 'normal');
+        const fontWeight = (cs.fontWeight || '400');
+        const fontFamily = cs.fontFamily || 'sans-serif';
+        ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
+        ctx.fillStyle = cs.color || '#000000';
+
+        // Make sure font is loaded at the actual size we're drawing
+        try {
+          // @ts-ignore
+          await Promise.race([
+            document.fonts.load(`${fontStyle} ${fontWeight} ${Math.max(10, Math.round(fontSize))}px ${fontFamily}`, text),
+            new Promise(r => setTimeout(r, 500))
+          ]);
+        } catch {}
+
+        const padL = parsePx(cs.paddingLeft);
+        const padT = parsePx(cs.paddingTop);
+        const padR = parsePx(cs.paddingRight);
+        const padB = parsePx(cs.paddingBottom);
+
+        const lhRaw = cs.lineHeight;
+        const lineHeight = lhRaw && lhRaw !== 'normal' ? parsePx(lhRaw) : Math.round(fontSize * 1.2);
+
+        const align = (cs.textAlign === 'right' ? 'right' : cs.textAlign === 'center' ? 'center' : 'left') as any;
+
+        // For single-line-ish blocks, do metric-based vertical centering (better for script fonts).
+        const singleLine = el.scrollHeight <= (lineHeight * 1.6);
+        if (singleLine) {
+          ctx.textAlign = align;
+          const metrics = ctx.measureText(text);
+          const ascent = (metrics as any).actualBoundingBoxAscent ?? fontSize * 0.8;
+          const descent = (metrics as any).actualBoundingBoxDescent ?? fontSize * 0.2;
+
+          let x = padL;
+          const maxW = Math.max(1, w - padL - padR);
+          if (align === 'center') x = padL + maxW / 2;
+          if (align === 'right') x = padL + maxW;
+
+          const y = (h + padT - padB + ascent - descent) / 2;
+          ctx.fillText(text, x, y);
+        } else {
+          drawWrapped(ctx, text, w, h, padL, padT, padR, padB, align, lineHeight);
+        }
+
+        const img = document.createElement('img');
+        img.src = c.toDataURL('image/png');
+        img.alt = text;
+        img.style.position = 'absolute';
+        img.style.left = '0';
+        img.style.top = '0';
+        img.style.width = '100%';
+        img.style.height = '100%';
+        img.style.pointerEvents = 'none';
+        img.style.zIndex = '50';
+
+        // Ensure overlay positions correctly
+        const prevPos = el.style.position;
+        if (!prevPos || prevPos === 'static') el.style.position = 'relative';
+
+        const prevColor = el.style.color;
+        const prevWebkitFill = (el.style as any).webkitTextFillColor;
+        const prevTextShadow = el.style.textShadow;
+
+        el.style.color = 'transparent';
+        (el.style as any).webkitTextFillColor = 'transparent';
+        el.style.textShadow = 'none';
+
+        el.appendChild(img);
+
+        cleanups.push(() => {
+          try {
+            img.remove();
+            el.style.color = prevColor;
+            (el.style as any).webkitTextFillColor = prevWebkitFill;
+            el.style.textShadow = prevTextShadow;
+            el.style.position = prevPos;
+          } catch {}
+        });
+      }
+
+      if (!cleanups.length) return null;
+
+      return () => {
+        try { cleanups.forEach(fn => fn()); } catch {}
+      };
+    } catch {
+      return null;
+    }
+  };
+
   const handleExportPDF = async (preview: boolean) => {
     if (!bypassWarningsRef.current) {
       const warnings = dontShowExportWarnings ? [] : validateBeforeExport(config);
@@ -1467,8 +1849,32 @@ case 'delete':
     if (!canvas) return;
     const originalTransform = canvas.style.transform;
     canvas.style.transform = 'scale(1)';
+    let cleanupButtonOverlay: null | (() => void) = null;
+    let cleanupCustomTextOverlays: null | (() => void) = null;
     try {
-      const capture = await html2canvas(canvas, { useCORS: true, scale: 2, backgroundColor: config.colors.background });
+      await ensureFontsLoadedForExport();
+      cleanupButtonOverlay = await applyButtonLabelExportOverlay();
+      cleanupCustomTextOverlays = await applyCustomFontTextExportOverlays();
+
+
+      // Give layout a couple frames to settle after font loads (prevents last-millisecond metric shifts)
+      await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+      await new Promise(r => setTimeout(r, 200));
+
+      let capture: any = null;
+      try {
+        // Prefer foreignObjectRendering: it leverages the browser's native text layout (much more reliable for custom/script fonts).
+        capture = await renderElementForExport(canvas, config.colors.background);
+        } catch (e) {
+        // Fallback to the default renderer if foreignObject mode fails (usually due to an asset taint/CORS edge case).
+        capture = await html2canvas(canvas, {
+          useCORS: true,
+          scale: 2,
+          backgroundColor: config.colors.background,
+          foreignObjectRendering: false,
+          letterRendering: false,
+        } as any);
+      }
       const imgData = capture.toDataURL('image/png');
       const pdf = new jsPDF({ orientation: config.paper.orientation === 'portrait' ? 'p' : 'l', unit: 'pt', format: config.paper.size === 'US Letter' ? 'letter' : 'a4' });
       const pdfWidth = pdf.internal.pageSize.getWidth();
@@ -1505,7 +1911,10 @@ case 'delete':
 	        setRenameValue(defaultName);
 	        setRenameModalOpen(true);
 	      }
-    } catch (err) { console.error('Export failed:', err); } finally { canvas.style.transform = originalTransform; }
+    } catch (err) { console.error('Export failed:', err); } finally {
+      try { cleanupButtonOverlay?.(); } catch {}
+      canvas.style.transform = originalTransform;
+    }
   };
 
   const getQRUrl = () => {
@@ -2684,30 +3093,42 @@ const renderTipsPanel = () => {
           
           <DraggableBlock id="button" config={config} updateConfig={updateConfig} visible={config.visibility.button} onSnap={setSnapLines} onSelect={selectElement} selectedIds={selectedIds} isSelected={selectedIds.includes('button')} isPrimary={selectedId === 'button'} onContextMenu={handleContextMenu} zoom={zoom}>
             <div
-              style={{
+              data-ldd-block="button" style={{
                 backgroundColor: config.colors.button,
                 width: '100%',
                 height: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
+                position: 'relative',
               }}
               className="rounded-3xl shadow-xl overflow-hidden"
             >
+              {/* html2canvas can mis-measure flex centering on some fonts; absolute centering is more stable for export */}
               <span
-                style={{
-                  width: '100%',
-                  display: 'block',
-                  padding: '0 16px',
+                data-ldd-button-label="1" style={{
+                  position: 'absolute',
+                  left: '50%',
+                  top: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  display: 'inline-block',
+                  whiteSpace: 'nowrap',
+                  padding: '0 18px',
+                  maxWidth: '92%',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  textAlign: (config.fonts.blocks as any).button?.align ?? 'center',
                   fontFamily: (config.fonts.blocks as any).button?.family ?? config.fonts.global,
                   fontSize: `${(config.fonts.blocks as any).button?.size ?? Math.min(config.layout.blocks.button.h * 0.4, 30)}px`,
                   color: (config.fonts.blocks as any).button?.color ?? config.colors.buttonText,
                   fontWeight: (config.fonts.blocks as any).button?.bold ? 'bold' : 'normal',
                   fontStyle: (config.fonts.blocks as any).button?.italic ? 'italic' : 'normal',
                   textDecoration: (config.fonts.blocks as any).button?.underline ? 'underline' : 'none',
-                  textAlign: (config.fonts.blocks as any).button?.align ?? 'center',
-                  lineHeight: 1.05,
-                }}
+                  lineHeight: 1.2,
+                  WebkitFontSmoothing: 'antialiased',
+                  MozOsxFontSmoothing: 'grayscale',
+                  // Let decorative/script fonts keep their own spacing/kerning; forcing 0px can look "jumbled" on export in some fonts.
+                  wordSpacing: 'normal',
+                  letterSpacing: 'normal',
+                  fontKerning: 'auto',
+                } as React.CSSProperties}
               >
                 Download Now
               </span>
@@ -2728,9 +3149,42 @@ const renderTipsPanel = () => {
               }} 
               className="w-full h-full rounded-[40px] p-6 flex flex-col items-center justify-center gap-1 shadow-2xl overflow-hidden text-center border-4 border-white/20"
             >
-              <span className="uppercase opacity-70 block" style={{ fontSize: `${Math.max(10, config.fonts.blocks.promo.size * 0.9)}px` }}>{config.promo.title}</span>
-              <span className="tracking-tighter leading-none block font-black" style={{ fontSize: `${Math.max(14, config.fonts.blocks.promo.size * 2.0)}px` }}>{config.promo.code}</span>
-              <span className="opacity-90 block" style={{ fontSize: `${config.layout.blocks.promo.h * 0.08}px` }}>{config.promo.description}</span>
+              <span
+                className="block"
+                style={{
+                  fontSize: `${Math.max(10, config.fonts.blocks.promo.size * 0.9)}px`,
+                  lineHeight: 1.15,
+                  letterSpacing: '0px',
+                  fontKerning: 'normal',
+                  textTransform: 'none',
+                  opacity: 0.85,
+                }}
+              >
+                {config.promo.title}
+              </span>
+              <span
+                className="block"
+                style={{
+                  fontSize: `${Math.max(14, config.fonts.blocks.promo.size * 2.0)}px`,
+                  lineHeight: 1.05,
+                  letterSpacing: '0px',
+                  fontKerning: 'normal',
+                }}
+              >
+                {config.promo.code}
+              </span>
+              <span
+                className="block"
+                style={{
+                  fontSize: `${Math.max(10, config.layout.blocks.promo.h * 0.08)}px`,
+                  lineHeight: 1.2,
+                  letterSpacing: '0px',
+                  fontKerning: 'normal',
+                  opacity: 0.92,
+                }}
+              >
+                {config.promo.description}
+              </span>
             </div>
           </DraggableBlock>
 
