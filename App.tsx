@@ -433,10 +433,194 @@ const App: React.FC = () => {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const canvasRef = useRef<HTMLDivElement>(null);
   const fontUploadRef = useRef<HTMLInputElement>(null);
-  const [fontManagerOpen, setFontManagerOpen] = useState<boolean>(() => localStorage.getItem('ldd_font_manager_open') !== '0');
-  const [fontPreviewText, setFontPreviewText] = useState<string>(() => localStorage.getItem('ldd_font_preview_text') || 'The quick brown fox jumps over the lazy dog 123');
+  const [fontUploadWarningOpen, setFontUploadWarningOpen] = useState<boolean>(false);
 
-  const [marquee, setMarquee] = useState<null | { x0: number; y0: number; x1: number; y1: number; additive: boolean }>(null);
+  // Google Fonts (Google Fonts are free/open-licensed and generally OK for commercial use under their individual licenses.)
+type GoogleFontEntry = {
+  family: string;
+  category?: string;
+  variants?: string[];
+  subsets?: string[];
+};
+
+const [googleFontsAll, setGoogleFontsAll] = useState<GoogleFontEntry[]>([]);
+const [googleFontsSelected, setGoogleFontsSelected] = useState<GoogleFontEntry | null>(() => {
+  try {
+    const fam = (localStorage.getItem('ldd_google_fonts_selected_family') || '').trim();
+    return fam ? ({ family: fam } as GoogleFontEntry) : null;
+  } catch {
+    return null;
+  }
+});
+const [googleFontsLoaded, setGoogleFontsLoaded] = useState<string[]>(() => {
+  try { return JSON.parse(localStorage.getItem('ldd_google_fonts_loaded') || '[]'); } catch { return []; }
+});
+const [googleFontsQuery, setGoogleFontsQuery] = useState<string>('');
+const [googleFontsBusy, setGoogleFontsBusy] = useState<boolean>(false);
+const [googleFontsError, setGoogleFontsError] = useState<string | null>(null);
+const [fontManagerOpen, setFontManagerOpen] = useState<boolean>(() => localStorage.getItem('ldd_font_manager_open') !== '0');
+const [fontPreviewText, setFontPreviewText] = useState<string>(() => localStorage.getItem('ldd_font_preview_text') || 'The quick brown fox jumps over the lazy dog 123');
+
+const [marquee, setMarquee] = useState<null | { x0: number; y0: number; x1: number; y1: number; additive: boolean }>(null);
+
+  // Persist Google Fonts choices
+  useEffect(() => {
+    try { localStorage.setItem('ldd_google_fonts_loaded', JSON.stringify(googleFontsLoaded)); } catch {}
+  }, [googleFontsLoaded]);
+
+  // Persist selected Google Font
+  useEffect(() => {
+    try {
+      if (googleFontsSelected?.family) localStorage.setItem('ldd_google_fonts_selected_family', googleFontsSelected.family);
+    } catch {}
+  }, [googleFontsSelected?.family]);
+
+
+  // Re-inject CSS links for stored Google Fonts (e.g., after reload)
+  useEffect(() => {
+    for (const family of googleFontsLoaded) {
+      const f = (family || '').trim();
+      if (!f) continue;
+      const id = `ldd-gf-${f.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+      if (!document.getElementById(id)) {
+        const link = document.createElement('link');
+        link.id = id;
+        link.rel = 'stylesheet';
+        link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(f).replace(/%20/g, '+')}&display=swap`;
+        document.head.appendChild(link);
+      }
+    }
+  }, [googleFontsLoaded]);
+
+  // Fetch Google Fonts catalog (tries a CORS-friendly endpoint first)
+useEffect(() => {
+  if (!fontManagerOpen) return;
+  if (googleFontsAll.length) return;
+
+  let alive = true;
+  (async () => {
+    try {
+      setGoogleFontsBusy(true);
+      setGoogleFontsError(null);
+
+      let entries: GoogleFontEntry[] | null = null;
+
+      // 1) Preferred: google-webfonts-helper API (usually CORS-friendly)
+      try {
+        const res = await fetch('https://gwfh.mranftl.com/api/fonts?sort=alpha');
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          entries = data
+            .map((f: any) => ({
+              family: typeof f?.family === 'string' ? f.family.trim() : '',
+              category: typeof f?.category === 'string' ? f.category : undefined,
+              variants: Array.isArray(f?.variants) ? f.variants : undefined,
+              subsets: Array.isArray(f?.subsets) ? f.subsets : undefined,
+            }))
+            .filter((f: any) => f.family)
+            .sort((a: any, b: any) => a.family.localeCompare(b.family));
+        }
+      } catch {}
+
+      // 2) Fallback: raw GitHub font index (CORS-friendly, large but reliable)
+      if (!entries || !entries.length) {
+        try {
+          const res = await fetch('https://raw.githubusercontent.com/jonathantneal/google-fonts-complete/master/google-fonts.json', { cache: 'force-cache' });
+          const data = await res.json();
+          if (data && typeof data === 'object') {
+            // Format: { "ABeeZee": { "category": "...", "variants": [...], "subsets": [...] }, ... }
+            const out: GoogleFontEntry[] = [];
+            for (const [family, meta] of Object.entries<any>(data)) {
+              const f = (family || '').toString().trim();
+              if (!f) continue;
+              out.push({
+                family: f,
+                category: typeof meta?.category === 'string' ? meta.category : undefined,
+                variants: Array.isArray(meta?.variants) ? meta.variants : undefined,
+                subsets: Array.isArray(meta?.subsets) ? meta.subsets : undefined,
+              });
+            }
+            entries = out.sort((a, b) => a.family.localeCompare(b.family));
+          }
+        } catch {}
+      }
+
+      // 3) Fallback: fonts.google.com metadata (often blocked by CORS depending on environment)
+      if (!entries || !entries.length) {
+        const res = await fetch('https://fonts.google.com/metadata/fonts');
+        const raw = await res.text();
+        const cleaned = raw.replace(/^\)\]\}'\s*/, ''); // anti-XSSI prefix
+        const meta = JSON.parse(cleaned);
+        const families = (meta?.familyMetadataList || [])
+          .map((f: any) => (typeof f?.family === 'string' ? f.family.trim() : ''))
+          .filter(Boolean);
+        const unique = Array.from(new Set(families)).sort((a, b) => a.localeCompare(b));
+        entries = unique.map((family) => ({ family }));
+      }
+
+      if (!alive) return;
+      setGoogleFontsAll(entries || []);
+      if (entries && entries.length) {
+  const stored = (() => {
+    try { return (localStorage.getItem('ldd_google_fonts_selected_family') || '').trim(); } catch { return ''; }
+  })();
+  if (stored) {
+    const found = entries.find(e => (e.family || '').toLowerCase() === stored.toLowerCase());
+    const chosen = found || entries[0];
+    setGoogleFontsSelected(chosen);
+    // Preload for preview immediately (no click required)
+    previewGoogleFont(chosen.family);
+  } else {
+    const chosen = entries[0];
+    setGoogleFontsSelected(chosen);
+    // Preload for preview immediately (no click required)
+    previewGoogleFont(chosen.family);
+  }
+}
+    } catch (e: any) {
+      console.error(e);
+      if (alive) setGoogleFontsError('Could not load the Google Fonts list. (Network/CORS issue)');
+    } finally {
+      if (alive) setGoogleFontsBusy(false);
+    }
+  })();
+
+  return () => { alive = false; };
+}, [fontManagerOpen, googleFontsAll.length]);
+
+
+  const injectGoogleFontLink = useCallback((family: string, prefix: string = 'ldd-gf') => {
+  const f = (family || '').trim();
+  if (!f) return;
+  const id = `${prefix}-${f.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+  if (!document.getElementById(id)) {
+    const link = document.createElement('link');
+    link.id = id;
+    link.rel = 'stylesheet';
+    link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(f).replace(/%20/g, '+')}&display=swap`;
+    document.head.appendChild(link);
+  }
+}, []);
+
+const ensureGoogleFontLoaded = useCallback((family: string) => {
+  const f = (family || '').trim();
+  if (!f) return;
+  injectGoogleFontLink(f, 'ldd-gf');
+  setGoogleFontsLoaded((prev) => (prev.includes(f) ? prev : [...prev, f]));
+}, [injectGoogleFontLink]);
+
+const previewGoogleFont = useCallback((family: string) => {
+  const f = (family || '').trim();
+  if (!f) return;
+  // Load for preview without permanently "adding" it
+  injectGoogleFontLink(f, 'ldd-gf-preview');
+}, [injectGoogleFontLink]);
+
+  // Auto-load the selected font for the preview pane (so it renders immediately without a click)
+  useEffect(() => {
+    if (!googleFontsSelected?.family) return;
+    previewGoogleFont(googleFontsSelected.family);
+  }, [googleFontsSelected?.family, previewGoogleFont]);
 
   const getGroupByMember = useCallback((id: string) => {
     return config.layout.groups?.find(g => g.memberIds.includes(id)) || null;
@@ -2403,6 +2587,7 @@ const renderTipsPanel = () => {
 
 
   return (
+    <div className="relative h-screen w-screen">
     <div className="h-screen w-screen flex bg-slate-100 font-sans transition-colors overflow-hidden">
       <input ref={fontUploadRef} type="file" accept=".ttf,.otf,.woff,.woff2" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUploadFont(f); e.currentTarget.value = ''; }} />
       {/* CONTEXTUAL TOOLBAR */}
@@ -2426,7 +2611,7 @@ const renderTipsPanel = () => {
                       else updateConfig(`fonts.blocks.${selectedId}.family`, e.target.value);
                     }}
                   >
-                    {[...FONT_FAMILIES, ...customFontFamilies].map(ff => <option key={ff} value={ff}>{ff}</option>)}
+                    {Array.from(new Set([...FONT_FAMILIES, ...googleFontsLoaded, ...customFontFamilies])).map(ff => <option key={ff} value={ff}>{ff}</option>)}
                   </select>
                 </div>
 
@@ -2477,7 +2662,14 @@ const renderTipsPanel = () => {
   <button onClick={() => handleAction('sendToBack')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Send to Back"><ArrowDownToLine size={16}/></button>
   <button onClick={() => handleAction('bringToFront')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Bring to Front"><ArrowUpToLine size={16}/></button>
   <div className="w-px h-6 bg-slate-200 mx-2" />
-  <button onClick={() => { if (canManageFonts) handleAction('upload-font'); }} disabled={!canManageFonts} className={`p-2 rounded-lg ${canManageFonts ? 'hover:bg-slate-100 text-slate-500' : 'text-slate-300 cursor-not-allowed'}`} title={canManageFonts ? 'Manage Fonts' : 'Select a text element to manage fonts'}><Upload size={16}/></button>
+  <button
+    onClick={() => handleAction('upload-font')}
+    className="px-3 py-2 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 inline-flex items-center gap-2 text-xs font-black border border-slate-200"
+    title="Font Manager"
+  >
+    <Type size={16} className="text-slate-500" />
+    Fonts
+  </button>
 </div>
 
 <div className="flex items-center gap-4 border-l pl-6 border-slate-200">
@@ -2687,244 +2879,7 @@ const renderTipsPanel = () => {
 	      )}
 
 
-      {/* Font Manager modal (white card) */}
-      {fontManagerOpen && (
-        <div className="fixed inset-0 z-[236] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
-          <div className="bg-white rounded-[28px] p-7 max-w-xl w-full shadow-2xl border border-slate-100">
-            <div className="flex items-start gap-4">
-              <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center shrink-0">
-                <Type className="text-emerald-700" size={24} />
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-black text-slate-900">Fonts</h3>
-                <p className="text-xs text-slate-600 mt-1">Install or remove custom fonts. These apply to the canvas only.</p>
-              </div>
-              <button
-                onClick={() => setFontManagerOpen(false)}
-                className="p-2 rounded-xl hover:bg-slate-100 text-slate-500"
-                aria-label="Close"
-              >
-                <X size={18} />
-              </button>
-            </div>
 
-            <div className="mt-5 flex items-center justify-between gap-3">
-              <button
-                onClick={() => fontUploadRef.current?.click()}
-                className="px-4 py-2 rounded-xl font-black text-xs bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg shadow-emerald-100 inline-flex items-center gap-2"
-              >
-                <Upload size={16} />
-                Install Font
-              </button>
-
-              <div className="flex-1" />
-
-              <div className="w-full max-w-sm">
-                <label className="text-[11px] font-bold text-slate-700">Preview text</label>
-                <input
-                  value={fontPreviewText}
-                  onChange={(e) => setFontPreviewText(e.target.value)}
-                  className="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-emerald-200"
-                  placeholder="Type preview text…"
-                />
-              </div>
-            </div>
-
-            <div className="mt-5 border border-slate-200 rounded-2xl overflow-hidden">
-              <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-                <div className="text-xs font-black text-slate-800">Installed Fonts</div>
-                <div className="text-[11px] text-slate-600">{customFontFamilies.length} total • {Array.from(usedFontsInDoc).filter(f => customFontFamilies.includes(f)).length} used</div>
-              </div>
-
-              <div className="max-h-[320px] overflow-auto">
-                {customFontFamilies.length === 0 ? (
-                  <div className="p-4 text-sm text-slate-600">
-                    No custom fonts installed yet. Click <span className="font-bold">Install Font</span> to add one.
-                  </div>
-                ) : (
-                  <div className="divide-y divide-slate-100">
-                    {customFontFamilies.slice().reverse().map((fname) => (
-                      <div key={fname} className="p-4 flex items-start gap-4">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <div className="text-sm font-black text-slate-900 truncate">{fname}</div>
-                            {usedFontsInDoc.has(fname) && (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800">Used</span>
-                            )}
-                          </div>
-                          <div
-                            className="mt-2 text-sm text-slate-800 bg-white rounded-xl border border-slate-100 p-3"
-                            style={{ fontFamily: fname }}
-                          >
-                            {fontPreviewText || ' '}
-                          </div>
-                        </div>
-
-                        <button
-                          onClick={() => { if (!usedFontsInDoc.has(fname)) uninstallCustomFont(fname); }}
-                          disabled={usedFontsInDoc.has(fname)}
-                          className={`px-3 py-2 rounded-xl font-black text-xs bg-rose-600 text-white shadow-lg shadow-rose-100 inline-flex items-center gap-2 shrink-0 ${usedFontsInDoc.has(fname) ? 'opacity-40 cursor-not-allowed' : 'hover:bg-rose-700'}`}
-                          title="Uninstall font"
-                        >
-                          <Trash2 size={16} />
-                          Uninstall
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="mt-5 flex justify-end">
-              <button
-                onClick={() => setFontManagerOpen(false)}
-                className="px-4 py-2 rounded-xl font-black text-xs bg-slate-200 text-slate-800 hover:bg-slate-300"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* API Key Required Popup */}
-
-      {needsApiKey && (
-        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
-          <div className="bg-white rounded-[28px] p-7 max-w-md w-full shadow-2xl border border-slate-100">
-            <div className="flex items-start gap-4">
-              <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center shrink-0">
-                <Info className="text-indigo-600" size={24} />
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-black text-slate-900">API key needed</h3>
-                <p className="text-xs text-slate-600 font-medium mt-1">
-                  This feature uses Gemini. Add your own Gemini API key in Settings to enable AI tools.
-                </p>
-              </div>
-              <button onClick={() => setNeedsApiKey(false)} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500" title="Close"><X size={18} /></button>
-            </div>
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => { setNeedsApiKey(false); setShowSettings(true); }}
-                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all"
-              >
-                Open Settings
-              </button>
-              <button
-                onClick={() => setNeedsApiKey(false)}
-                className="flex-1 py-3 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200 transition-all"
-              >
-                Not now
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Settings Modal */}
-      {showSettings && (
-        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
-          <div className="bg-white rounded-[30px] p-8 max-w-2xl w-full shadow-2xl border border-slate-100 relative">
-            <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 p-2 rounded-xl hover:bg-slate-100 text-slate-500" title="Close"><X size={18} /></button>
-            <div className="flex items-center gap-4 mb-6">
-              <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center"><Settings className="text-indigo-600" size={24} /></div>
-              <div>
-                <h3 className="text-xl font-black text-slate-900">Settings</h3>
-                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">API Key · Privacy · Liability</p>
-              </div>
-            </div>
-
-            <div className="grid md:grid-cols-2 gap-6">
-              <div className="space-y-4">
-                <h4 className="text-sm font-black text-slate-900 uppercase">Gemini API Key (per user)</h4>
-                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
-                  <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Your Gemini API Key</label>
-                  <div className="flex gap-2 mt-2">
-                    <input
-                      type={showGeminiKey ? 'text' : 'password'}
-                      value={geminiKey}
-                      onChange={e => setGeminiKey(e.target.value)}
-                      placeholder="Paste your key here"
-                      className="flex-1 p-3 bg-white border-2 border-slate-200 rounded-xl text-xs font-black outline-none focus:border-indigo-600"
-                    />
-                    <button onClick={() => setShowGeminiKey(v => !v)} className="px-3 py-3 rounded-xl bg-white border-2 border-slate-200 text-slate-700 hover:border-indigo-200" title={showGeminiKey ? 'Hide' : 'Show'}>
-                      {showGeminiKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </div>
-
-                  <div className="flex gap-2 mt-3">
-                    <button
-                      onClick={() => { persistGeminiKey(); setAiError(null); }}
-                      className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-700 transition-all"
-                    >
-                      Save Key
-                    </button>
-                    <button
-                      onClick={() => { setGeminiKey(''); localStorage.removeItem(LDD_GEMINI_KEY_STORAGE); setShowGeminiKey(false); }}
-                      className="flex-1 py-2.5 bg-white border-2 border-slate-200 text-slate-700 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-50 transition-all"
-                    >
-                      Clear
-                    </button>
-                  </div>
-
-                  <div className="mt-4 space-y-2">
-                    <button
-                      onClick={() => window.open('https://aistudio.google.com/app/apikey', '_blank', 'noopener,noreferrer')}
-                      className="w-full py-2.5 bg-emerald-50 text-emerald-700 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-100 transition-all"
-                    >
-                      Get a free Gemini API key
-                    </button>
-                    <ol className="text-xs text-slate-600 font-medium list-decimal pl-5 space-y-1">
-                      <li>Open the Gemini API Key page.</li>
-                      <li>Sign in with Google and create a key.</li>
-                      <li>Paste it here, then click <span className="font-black">Save Key</span>.</li>
-                    </ol>
-                    <p className="text-[10px] text-slate-500 font-bold italic">
-                      Tip: Set usage limits/quotas in your Google project so you never get surprised.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="p-4 rounded-2xl bg-white border-2 border-slate-100">
-                  <h4 className="text-sm font-black text-slate-900 uppercase mb-2">Privacy Policy</h4>
-                  <p className="text-xs text-slate-600 font-medium leading-relaxed">
-                    Your Gemini API key is stored locally in your browser (localStorage) and is not sent to LavenderDragonDesign.
-                    When you use an AI feature, your prompt/text and your key are sent directly to Google’s Gemini API to generate a response.
-                    Avoid entering sensitive personal information.
-                  </p>
-                </div>
-                <div className="p-4 rounded-2xl bg-white border-2 border-slate-100">
-                  <h4 className="text-sm font-black text-slate-900 uppercase mb-2">Liability Notice</h4>
-                  <p className="text-xs text-slate-600 font-medium leading-relaxed">
-                    LavenderDragonDesign is not liable for API charges, usage, quota overruns, or costs incurred from your Gemini API key.
-                    You are responsible for your own key and billing settings. If you publish this tool publicly, add rate limits and quotas.
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-2xl bg-white border-2 border-slate-100">
-                  <h4 className="text-sm font-black text-slate-900 uppercase mb-2">Support</h4>
-                  <a
-                    href={LDD_BMAC_URL}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-2 px-4 py-3 rounded-2xl bg-white border-2 border-slate-200 text-slate-900 hover:bg-slate-50 transition-all text-[10px] font-black uppercase tracking-widest"
-                  >
-                    <Coffee size={16} /> Buy Me a Coffee
-                  </a>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3 mt-6">
-              <button onClick={() => setShowSettings(false)} className="px-5 py-3 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200">Close</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ICON SIDEBAR (Fixed Width) */}
       <div className="no-print w-24 bg-white border-r-2 border-slate-100 flex flex-col items-center py-8 gap-8 z-50 shadow-2xl shrink-0">
@@ -3427,12 +3382,20 @@ const renderTipsPanel = () => {
 
                 {/* GROUP: Fonts */}
                 <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Fonts</div>
-                <button
-                  onClick={() => handleAction('upload-font')}
-                  className="w-full px-6 py-3 hover:bg-slate-50 flex items-center gap-4 text-xs font-black text-slate-900 text-left"
-                >
-                  <Upload size={16} /> Upload Custom Font
-                </button>
+                <div className="relative group">
+  <button
+    disabled
+    className="w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left text-slate-300 cursor-not-allowed"
+  >
+    <Upload size={16} /> Upload Custom Font
+  </button>
+  <div className="pointer-events-none absolute left-6 top-1/2 -translate-y-1/2 translate-x-40 opacity-0 group-hover:opacity-100 transition-opacity">
+    <div className="bg-white border border-slate-200 shadow-xl rounded-2xl px-4 py-3 w-56">
+      <div className="text-xs font-black text-slate-900">Coming soon</div>
+      <div className="text-[11px] text-slate-600 mt-1">Custom font uploads are temporarily disabled while export rendering is being improved.</div>
+    </div>
+  </div>
+</div>
 
                 {/* GROUP: Edit */}
                 <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Edit</div>
@@ -3472,6 +3435,446 @@ const renderTipsPanel = () => {
         </>
       )}
     </div>
+
+      {/* Font upload heads-up (white card) */}
+      {fontUploadWarningOpen && (
+        <div className="fixed inset-0 z-[235] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] p-7 max-w-lg w-full shadow-2xl border border-slate-100">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center shrink-0">
+                <Info className="text-amber-700" size={22} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-black text-slate-900">Quick heads up</h3>
+                <p className="text-sm text-slate-600 mt-1">
+                  Some uploaded fonts may not display perfectly yet (especially in export). We&apos;re improving it.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center gap-3">
+              <button
+                onClick={() => {
+                  try { localStorage.setItem('ldd_font_upload_warn_dismissed', '1'); } catch {}
+                  setFontUploadWarningOpen(false);
+                  fontUploadRef.current?.click();
+                }}
+                className="flex-1 py-3 bg-emerald-600 text-white rounded-xl font-black text-xs shadow-lg shadow-emerald-100 hover:bg-emerald-700"
+              >
+                Got it — Install Font
+              </button>
+              <button
+                onClick={() => setFontUploadWarningOpen(false)}
+                className="px-4 py-3 rounded-xl font-black text-xs border border-slate-200 hover:bg-slate-50 text-slate-700"
+              >
+                Not now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Font Manager modal (white card) */}
+      {fontManagerOpen && (
+        <div className="fixed inset-0 z-[236] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] p-7 max-w-xl w-full shadow-2xl border border-slate-100">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center shrink-0">
+                <Type className="text-emerald-700" size={24} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-black text-slate-900">Fonts</h3>
+                <p className="text-xs text-slate-600 mt-1">Install or remove custom fonts. These apply to the canvas only.</p>
+              </div>
+              <button
+                onClick={() => setFontManagerOpen(false)}
+                className="p-2 rounded-xl hover:bg-slate-100 text-slate-500"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-5 flex items-center justify-between gap-3">
+              <div className="relative group">
+  <button
+    disabled
+    className="px-4 py-2 rounded-xl font-black text-xs bg-slate-200 text-slate-400 cursor-not-allowed inline-flex items-center gap-2"
+  >
+    <Upload size={16} />
+    Install Font
+  </button>
+  <div className="pointer-events-none absolute left-0 top-full mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+    <div className="bg-white border border-slate-200 shadow-xl rounded-2xl px-4 py-3 w-64">
+      <div className="text-xs font-black text-slate-900">Coming soon</div>
+      <div className="text-[11px] text-slate-600 mt-1">Custom font uploads are temporarily disabled while we improve rendering consistency.</div>
+    </div>
+  </div>
+</div>
+
+              <div className="flex-1" />
+
+              <div className="w-full max-w-sm">
+                <label className="text-[11px] font-bold text-slate-700">Preview text</label>
+                <input
+                  value={fontPreviewText}
+                  onChange={(e) => setFontPreviewText(e.target.value)}
+                  className="mt-1 w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-emerald-200"
+                  placeholder="Type preview text…"
+                />
+              </div>
+            </div>
+
+
+            {/* Google Fonts picker */}
+            <div className="mt-5 border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-black text-slate-800">Google Fonts</div>
+                  <div className="text-[11px] text-slate-600">Pick from Google Fonts (free/open-licensed; typically commercial-use friendly).</div>
+                </div>
+                <div className="text-[11px] text-slate-600">{googleFontsLoaded.length} added</div>
+              </div>
+
+              <div className="p-4">
+                <div className="flex items-center gap-3">
+                  <input
+                    value={googleFontsQuery}
+                    onChange={(e) => setGoogleFontsQuery(e.target.value)}
+                    className="flex-1 px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm outline-none focus:ring-2 focus:ring-emerald-200"
+                    placeholder="Search Google Fonts…"
+                  />
+                  <button
+                    onClick={() => {
+                      const q = googleFontsQuery.trim().toLowerCase();
+                      if (!q) return;
+                      const exact = googleFontsAll.find(f => (f.family || '').toLowerCase() === q);
+                      if (exact) {
+                        setGoogleFontsSelected(exact);
+                        previewGoogleFont(exact.family);
+                        ensureGoogleFontLoaded(exact.family);
+                      }
+                    }}
+                    className="px-4 py-2 rounded-xl font-black text-xs bg-slate-900 text-white hover:bg-slate-800"
+                    title="Add exact match"
+                  >
+                    Add
+                  </button>
+                </div>
+
+                {googleFontsBusy && (
+                  <div className="mt-3 text-xs text-slate-600 inline-flex items-center gap-2">
+                    <Loader2 className="animate-spin" size={14} /> Loading Google Fonts…
+                  </div>
+                )}
+                {googleFontsError && (
+                  <div className="mt-3 text-xs text-rose-600">{googleFontsError}</div>
+                )}
+
+                {!googleFontsBusy && !googleFontsError && googleFontsAll.length > 0 && (
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {/* List */}
+                    <div className="border border-slate-200 rounded-2xl overflow-hidden">
+                      <div className="px-3 py-2 bg-white border-b border-slate-200 text-[11px] text-slate-600">
+                        Click a font to preview • Double-click to add
+                      </div>
+                      <div className="max-h-[260px] overflow-auto divide-y divide-slate-100">
+                        {googleFontsAll
+                          .filter(f => !googleFontsQuery.trim() || (f.family || '').toLowerCase().includes(googleFontsQuery.trim().toLowerCase()))
+                          .slice(0, 300)
+                          .map((f) => {
+                            const family = f.family;
+                            const added = googleFontsLoaded.includes(family);
+                            const isSel = googleFontsSelected?.family === family;
+                            return (
+                              <button
+                                key={family}
+                                onClick={() => { setGoogleFontsSelected(f); previewGoogleFont(family); }}
+                                onDoubleClick={() => ensureGoogleFontLoaded(family)}
+                                className={
+                                  "w-full text-left px-3 py-2 flex items-center justify-between hover:bg-slate-50 " +
+                                  (added ? "bg-emerald-50/60 " : "") +
+                                  (isSel ? "ring-2 ring-inset ring-indigo-200 " : "")
+                                }
+                              >
+                                <div className="min-w-0">
+                                  <div className="text-sm font-black text-slate-900 truncate" style={{ fontFamily: family }}>{family}</div>
+                                  <div className="text-[11px] text-slate-600 truncate" style={{ fontFamily: family }}>{fontPreviewText}</div>
+                                </div>
+                                <div className={"text-[11px] font-black " + (added ? "text-emerald-700" : "text-slate-500")}>
+                                  {added ? "Added" : "Add"}
+                                </div>
+                              </button>
+                            );
+                          })}
+                      </div>
+                      <div className="px-3 py-2 bg-slate-50 border-t border-slate-200 text-[11px] text-slate-600">
+                        Showing up to 300 results • Type to filter
+                      </div>
+                    </div>
+
+                    {/* Preview pane */}
+                    <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white">
+                      <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+                        <div className="min-w-0">
+                          <div className="text-xs font-black text-slate-800">Preview</div>
+                          <div className="text-[11px] text-slate-600 truncate">
+                            {googleFontsSelected ? googleFontsSelected.family : 'Select a font from the list'}
+                          </div>
+                        </div>
+                        {googleFontsSelected && (
+                          <div className="flex items-center gap-2">
+                            {googleFontsLoaded.includes(googleFontsSelected.family) ? (
+                              <button
+                                onClick={() => setGoogleFontsLoaded(prev => prev.filter(x => x !== googleFontsSelected.family))}
+                                className="px-3 py-2 rounded-xl font-black text-xs bg-rose-600 text-white hover:bg-rose-700 shadow-lg shadow-rose-100"
+                                title="Remove from added fonts"
+                              >
+                                Remove
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => ensureGoogleFontLoaded(googleFontsSelected.family)}
+                                className="px-3 py-2 rounded-xl font-black text-xs bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg shadow-emerald-100"
+                                title="Add this font"
+                              >
+                                Add
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="p-4">
+                        {googleFontsSelected ? (
+                          <>
+                            <div className="text-[11px] text-slate-600">
+                              {googleFontsSelected.category ? <span className="font-bold">Category:</span> : null}
+                              {googleFontsSelected.category ? ` ${googleFontsSelected.category}` : ''}
+                              {googleFontsSelected.subsets?.length ? ` • Subsets: ${googleFontsSelected.subsets.slice(0, 6).join(', ')}${googleFontsSelected.subsets.length > 6 ? '…' : ''}` : ''}
+                            </div>
+
+                            <div
+                              className="mt-3 rounded-2xl border border-slate-200 p-4 bg-white"
+                              style={{ fontFamily: googleFontsSelected.family }}
+                            >
+                              <div className="text-lg font-black leading-snug">{fontPreviewText}</div>
+                              <div className="mt-2 text-sm">{fontPreviewText}</div>
+                            </div>
+
+                            {googleFontsSelected.variants?.length ? (
+                              <div className="mt-3 text-[11px] text-slate-600">
+                                <span className="font-bold">Variants:</span> {googleFontsSelected.variants.slice(0, 10).join(', ')}{googleFontsSelected.variants.length > 10 ? '…' : ''}
+                              </div>
+                            ) : null}
+                          </>
+                        ) : (
+                          <div className="text-sm text-slate-600">
+                            Pick a font on the left to see it here.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="mt-5 border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                <div className="text-xs font-black text-slate-800">Installed Fonts</div>
+                <div className="text-[11px] text-slate-600">{customFontFamilies.length} total • {Array.from(usedFontsInDoc).filter(f => customFontFamilies.includes(f)).length} used</div>
+              </div>
+
+              <div className="max-h-[320px] overflow-auto">
+                {customFontFamilies.length === 0 ? (
+                  <div className="p-4 text-sm text-slate-600">
+                    No custom fonts installed yet. Click <span className="font-bold">Install Font</span> to add one.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {customFontFamilies.slice().reverse().map((fname) => (
+                      <div key={fname} className="p-4 flex items-start gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <div className="text-sm font-black text-slate-900 truncate">{fname}</div>
+                            {usedFontsInDoc.has(fname) && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800">Used</span>
+                            )}
+                          </div>
+                          <div
+                            className="mt-2 text-sm text-slate-800 bg-white rounded-xl border border-slate-100 p-3"
+                            style={{ fontFamily: fname }}
+                          >
+                            {fontPreviewText || ' '}
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => { if (!usedFontsInDoc.has(fname)) uninstallCustomFont(fname); }}
+                          disabled={usedFontsInDoc.has(fname)}
+                          className={`px-3 py-2 rounded-xl font-black text-xs bg-rose-600 text-white shadow-lg shadow-rose-100 inline-flex items-center gap-2 shrink-0 ${usedFontsInDoc.has(fname) ? 'opacity-40 cursor-not-allowed' : 'hover:bg-rose-700'}`}
+                          title="Uninstall font"
+                        >
+                          <Trash2 size={16} />
+                          Uninstall
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                onClick={() => setFontManagerOpen(false)}
+                className="px-4 py-2 rounded-xl font-black text-xs bg-slate-200 text-slate-800 hover:bg-slate-300"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* API Key Required Popup */}
+
+      {needsApiKey && (
+        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] p-7 max-w-md w-full shadow-2xl border border-slate-100">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center shrink-0">
+                <Info className="text-indigo-600" size={24} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-black text-slate-900">API key needed</h3>
+                <p className="text-xs text-slate-600 font-medium mt-1">
+                  This feature uses Gemini. Add your own Gemini API key in Settings to enable AI tools.
+                </p>
+              </div>
+              <button onClick={() => setNeedsApiKey(false)} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500" title="Close"><X size={18} /></button>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => { setNeedsApiKey(false); setShowSettings(true); }}
+                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all"
+              >
+                Open Settings
+              </button>
+              <button
+                onClick={() => setNeedsApiKey(false)}
+                className="flex-1 py-3 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200 transition-all"
+              >
+                Not now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[30px] p-8 max-w-2xl w-full shadow-2xl border border-slate-100 relative">
+            <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 p-2 rounded-xl hover:bg-slate-100 text-slate-500" title="Close"><X size={18} /></button>
+            <div className="flex items-center gap-4 mb-6">
+              <div className="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center"><Settings className="text-indigo-600" size={24} /></div>
+              <div>
+                <h3 className="text-xl font-black text-slate-900">Settings</h3>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">API Key · Privacy · Liability</p>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-6">
+              <div className="space-y-4">
+                <h4 className="text-sm font-black text-slate-900 uppercase">Gemini API Key (per user)</h4>
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                  <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Your Gemini API Key</label>
+                  <div className="flex gap-2 mt-2">
+                    <input
+                      type={showGeminiKey ? 'text' : 'password'}
+                      value={geminiKey}
+                      onChange={e => setGeminiKey(e.target.value)}
+                      placeholder="Paste your key here"
+                      className="flex-1 p-3 bg-white border-2 border-slate-200 rounded-xl text-xs font-black outline-none focus:border-indigo-600"
+                    />
+                    <button onClick={() => setShowGeminiKey(v => !v)} className="px-3 py-3 rounded-xl bg-white border-2 border-slate-200 text-slate-700 hover:border-indigo-200" title={showGeminiKey ? 'Hide' : 'Show'}>
+                      {showGeminiKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={() => { persistGeminiKey(); setAiError(null); }}
+                      className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-700 transition-all"
+                    >
+                      Save Key
+                    </button>
+                    <button
+                      onClick={() => { setGeminiKey(''); localStorage.removeItem(LDD_GEMINI_KEY_STORAGE); setShowGeminiKey(false); }}
+                      className="flex-1 py-2.5 bg-white border-2 border-slate-200 text-slate-700 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-50 transition-all"
+                    >
+                      Clear
+                    </button>
+                  </div>
+
+                  <div className="mt-4 space-y-2">
+                    <button
+                      onClick={() => window.open('https://aistudio.google.com/app/apikey', '_blank', 'noopener,noreferrer')}
+                      className="w-full py-2.5 bg-emerald-50 text-emerald-700 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-100 transition-all"
+                    >
+                      Get a free Gemini API key
+                    </button>
+                    <ol className="text-xs text-slate-600 font-medium list-decimal pl-5 space-y-1">
+                      <li>Open the Gemini API Key page.</li>
+                      <li>Sign in with Google and create a key.</li>
+                      <li>Paste it here, then click <span className="font-black">Save Key</span>.</li>
+                    </ol>
+                    <p className="text-[10px] text-slate-500 font-bold italic">
+                      Tip: Set usage limits/quotas in your Google project so you never get surprised.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-white border-2 border-slate-100">
+                  <h4 className="text-sm font-black text-slate-900 uppercase mb-2">Privacy Policy</h4>
+                  <p className="text-xs text-slate-600 font-medium leading-relaxed">
+                    Your Gemini API key is stored locally in your browser (localStorage) and is not sent to LavenderDragonDesign.
+                    When you use an AI feature, your prompt/text and your key are sent directly to Google’s Gemini API to generate a response.
+                    Avoid entering sensitive personal information.
+                  </p>
+                </div>
+                <div className="p-4 rounded-2xl bg-white border-2 border-slate-100">
+                  <h4 className="text-sm font-black text-slate-900 uppercase mb-2">Liability Notice</h4>
+                  <p className="text-xs text-slate-600 font-medium leading-relaxed">
+                    LavenderDragonDesign is not liable for API charges, usage, quota overruns, or costs incurred from your Gemini API key.
+                    You are responsible for your own key and billing settings. If you publish this tool publicly, add rate limits and quotas.
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-white border-2 border-slate-100">
+                  <h4 className="text-sm font-black text-slate-900 uppercase mb-2">Support</h4>
+                  <a
+                    href={LDD_BMAC_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-3 rounded-2xl bg-white border-2 border-slate-200 text-slate-900 hover:bg-slate-50 transition-all text-[10px] font-black uppercase tracking-widest"
+                  >
+                    <Coffee size={16} /> Buy Me a Coffee
+                  </a>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button onClick={() => setShowSettings(false)} className="px-5 py-3 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+  </div>
   );
 };
 
