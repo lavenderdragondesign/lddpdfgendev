@@ -653,6 +653,7 @@ const previewGoogleFont = useCallback((family: string) => {
   const [restoreModal, setRestoreModal] = useState(false);
   const [restoreChoiceMade, setRestoreChoiceMade] = useState(false);
   const [dontShowAgain, setDontShowAgain] = useState(false);
+  const [showConstructionModal, setShowConstructionModal] = useState(true);
 
 // Tips panel (docked on the right side of the editor viewport)
 const TIPS_OPEN_KEY = 'ldd_pdfgen_tips_panel_open_v1';
@@ -2519,6 +2520,40 @@ const renderTipsPanel = () => {
 
   return (
     <div className="relative h-screen w-screen">
+    {showConstructionModal && (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/70 backdrop-blur-md px-6">
+        <div className="relative w-full max-w-lg overflow-hidden rounded-[32px] border border-indigo-100 bg-white shadow-2xl">
+          <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-r from-indigo-500 via-fuchsia-500 to-orange-400" />
+          <div className="p-10 text-center">
+            <button
+              onClick={() => setShowConstructionModal(false)}
+              className="absolute right-4 top-4 inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
+              aria-label="Close under construction modal"
+              title="Close"
+            >
+              <X size={18} />
+            </button>
+            <div className="mb-4 text-6xl">🚧</div>
+            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-amber-700">
+              Work in progress
+            </div>
+            <h1 className="mb-3 text-3xl font-black text-slate-900">Under Construction</h1>
+            <p className="mx-auto max-w-md text-sm font-medium leading-relaxed text-slate-500">
+              This tool is currently being updated and a few features may shift around while the dragons do construction math.
+            </p>
+            <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4 text-left text-xs font-semibold leading-relaxed text-slate-600">
+              You can still poke around, but expect a few rough edges while updates are being wrapped up.
+            </div>
+            <button
+              onClick={() => setShowConstructionModal(false)}
+              className="mt-6 inline-flex items-center justify-center rounded-2xl bg-indigo-600 px-6 py-3 text-sm font-black text-white shadow-lg shadow-indigo-200 transition hover:bg-indigo-700"
+            >
+              Continue Anyway
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     <div className="h-screen w-screen flex bg-slate-100 font-sans transition-colors overflow-hidden">
       <input ref={fontUploadRef} type="file" accept=".ttf,.otf,.woff,.woff2" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUploadFont(f); e.currentTarget.value = ''; }} />
       {/* CONTEXTUAL TOOLBAR */}
