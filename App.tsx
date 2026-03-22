@@ -653,7 +653,7 @@ const previewGoogleFont = useCallback((family: string) => {
   const [restoreModal, setRestoreModal] = useState(false);
   const [restoreChoiceMade, setRestoreChoiceMade] = useState(false);
   const [dontShowAgain, setDontShowAgain] = useState(false);
-  const [showConstructionModal, setShowConstructionModal] = useState(true);
+  const [showConstructionModal, setShowConstructionModal] = useState(false);
 
 // Tips panel (docked on the right side of the editor viewport)
 const TIPS_OPEN_KEY = 'ldd_pdfgen_tips_panel_open_v1';
@@ -1607,13 +1607,17 @@ const isCanvasMostlyBlank = (c: HTMLCanvasElement) => {
     if (!ctx) return true;
     const w = c.width, h = c.height;
     if (!w || !h) return true;
-    const xs = [0, Math.floor(w*0.25), Math.floor(w*0.5), Math.floor(w*0.75), w-1].filter(x => x >= 0 && x < w);
-    const ys = [0, Math.floor(h*0.25), Math.floor(h*0.5), Math.floor(h*0.75), h-1].filter(y => y >= 0 && y < h);
+    // Sample a grid of points across the canvas for reliable blank detection
+    const steps = 8;
+    const xs = Array.from({ length: steps }, (_, i) => Math.floor((i / (steps - 1)) * (w - 1)));
+    const ys = Array.from({ length: steps }, (_, i) => Math.floor((i / (steps - 1)) * (h - 1)));
     let nonEmpty = 0;
+    const threshold = Math.floor(steps * steps * 0.05); // 5% of sampled pixels must have content
     for (const y of ys) for (const x of xs) {
       const d = ctx.getImageData(x, y, 1, 1).data;
       // Any non-transparent pixel counts as content.
       if (d[3] > 0) nonEmpty++;
+      if (nonEmpty > threshold) return false;
     }
     return nonEmpty === 0;
   } catch {
@@ -1621,23 +1625,97 @@ const isCanvasMostlyBlank = (c: HTMLCanvasElement) => {
   }
 };
 
-const renderElementForExport = async (el: HTMLElement, bg: string) => {
+// Convert an external image URL to a data URL via a temporary canvas.
+// This avoids canvas taint caused by cross-origin imgs loaded without crossOrigin="anonymous"
+const toDataUrlViaCanvas = (src: string): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth || img.width;
+        c.height = img.naturalHeight || img.height;
+        const ctx = c.getContext('2d')!;
+        ctx.drawImage(img, 0, 0);
+        resolve(c.toDataURL('image/png'));
+      } catch (e) { reject(e); }
+    };
+    img.onerror = reject;
+    // Cache-bust so the browser re-fetches with CORS headers even if previously cached without
+    img.src = src + (src.includes('?') ? '&' : '?') + '_cors=' + Date.now();
+  });
+};
+
+// Replace all external img srcs inside el with data URLs, return a restore fn.
+const convertExternalImagesToDataURLs = async (el: HTMLElement): Promise<() => void> => {
+  const imgs = Array.from(el.querySelectorAll('img')) as HTMLImageElement[];
+  const originals: { img: HTMLImageElement; src: string }[] = [];
+  await Promise.all(imgs.map(async (img) => {
+    const src = img.getAttribute('src') || '';
+    if (!src.startsWith('http://') && !src.startsWith('https://')) return;
+    try {
+      const dataUrl = await toDataUrlViaCanvas(src);
+      originals.push({ img, src });
+      img.src = dataUrl;
+    } catch {
+      // If CORS fails, remove src so html2canvas skips it cleanly rather than tainting
+      originals.push({ img, src });
+      img.removeAttribute('src');
+    }
+  }));
+  return () => originals.forEach(({ img, src }) => { img.src = src; });
+};
+
+const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTMLCanvasElement> => {
+  const bgColor = bg || '#ffffff';
+
+  // Deep-clone the element so we can mutate it freely without affecting the live DOM.
+  const clone = el.cloneNode(true) as HTMLElement;
+
+  // Strip all transforms and position the clone off-screen but fully visible.
+  // Attaching directly to <body> escapes every overflow:hidden ancestor.
+  clone.style.cssText = `
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    transform: none !important;
+    width: ${el.offsetWidth}px !important;
+    height: ${el.offsetHeight}px !important;
+    z-index: -9999 !important;
+    pointer-events: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  `;
+  document.body.appendChild(clone);
+
+  // Replace external image srcs with data URLs inside the clone (avoids canvas taint).
+  await convertExternalImagesToDataURLs(clone);
+
+  // Give the browser a frame to paint the clone before capture.
+  await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
   const baseOpts: any = {
     useCORS: true,
+    allowTaint: false,
     scale: 2,
-    backgroundColor: bg,
+    backgroundColor: bgColor,
     letterRendering: false,
+    width: el.offsetWidth,
+    height: el.offsetHeight,
   };
 
   try {
-    const c1 = await html2canvas(el, { ...baseOpts, foreignObjectRendering: true });
-    if (!isCanvasMostlyBlank(c1)) return c1;
-  } catch {
-    // fall through
+    try {
+      const c1 = await html2canvas(clone, { ...baseOpts, foreignObjectRendering: true });
+      if (!isCanvasMostlyBlank(c1)) return c1;
+    } catch {
+      // fall through
+    }
+    return await html2canvas(clone, { ...baseOpts, foreignObjectRendering: false });
+  } finally {
+    document.body.removeChild(clone);
   }
-
-  // Fallback path (more compatible)
-  return await html2canvas(el, { ...baseOpts, foreignObjectRendering: false });
 };
 
   const ensureFontsLoadedForExport = async () => {
@@ -1994,8 +2072,6 @@ const renderElementForExport = async (el: HTMLElement, bg: string) => {
     const canvas = document.getElementById('pdf-canvas');
 
     if (!canvas) return;
-    const originalTransform = canvas.style.transform;
-    canvas.style.transform = 'scale(1)';
     let cleanupButtonOverlay: null | (() => void) = null;
     let cleanupCustomTextOverlays: null | (() => void) = null;
     try {
@@ -2009,24 +2085,12 @@ const renderElementForExport = async (el: HTMLElement, bg: string) => {
       await new Promise(r => setTimeout(r, 200));
 
       let capture: any = null;
-      try {
-        // Prefer foreignObjectRendering: it leverages the browser's native text layout (much more reliable for custom/script fonts).
-        capture = await renderElementForExport(canvas, config.colors.background);
-        } catch (e) {
-        // Fallback to the default renderer if foreignObject mode fails (usually due to an asset taint/CORS edge case).
-        capture = await html2canvas(canvas, {
-          useCORS: true,
-          scale: 2,
-          backgroundColor: config.colors.background,
-          foreignObjectRendering: false,
-          letterRendering: false,
-        } as any);
-      }
-      const imgData = capture.toDataURL('image/jpeg', 0.92);
+      capture = await renderElementForExport(canvas, config.colors.background);
+      const imgData = capture.toDataURL('image/png');
       const pdf = new jsPDF({ orientation: config.paper.orientation === 'portrait' ? 'p' : 'l', unit: 'pt', format: config.paper.size === 'US Letter' ? 'letter' : 'a4' });
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
-      pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
       const scaleX = pdfWidth / CANVAS_WIDTH;
       const scaleY = pdfHeight / CANVAS_HEIGHT;
 
@@ -2061,7 +2125,6 @@ const renderElementForExport = async (el: HTMLElement, bg: string) => {
     } catch (err) { console.error('Export failed:', err); } finally {
       try { cleanupButtonOverlay?.(); } catch {}
       try { cleanupCustomTextOverlays?.(); } catch {}
-      canvas.style.transform = originalTransform;
     }
   };
 
@@ -2520,40 +2583,7 @@ const renderTipsPanel = () => {
 
   return (
     <div className="relative h-screen w-screen">
-    {showConstructionModal && (
-      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/70 backdrop-blur-md px-6">
-        <div className="relative w-full max-w-lg overflow-hidden rounded-[32px] border border-indigo-100 bg-white shadow-2xl">
-          <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-r from-indigo-500 via-fuchsia-500 to-orange-400" />
-          <div className="p-10 text-center">
-            <button
-              onClick={() => setShowConstructionModal(false)}
-              className="absolute right-4 top-4 inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
-              aria-label="Close under construction modal"
-              title="Close"
-            >
-              <X size={18} />
-            </button>
-            <div className="mb-4 text-6xl">🚧</div>
-            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-amber-700">
-              Work in progress
-            </div>
-            <h1 className="mb-3 text-3xl font-black text-slate-900">Under Construction</h1>
-            <p className="mx-auto max-w-md text-sm font-medium leading-relaxed text-slate-500">
-              This tool is currently being updated and a few features may shift around while the dragons do construction math.
-            </p>
-            <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4 text-left text-xs font-semibold leading-relaxed text-slate-600">
-              You can still poke around, but expect a few rough edges while updates are being wrapped up.
-            </div>
-            <button
-              onClick={() => setShowConstructionModal(false)}
-              className="mt-6 inline-flex items-center justify-center rounded-2xl bg-indigo-600 px-6 py-3 text-sm font-black text-white shadow-lg shadow-indigo-200 transition hover:bg-indigo-700"
-            >
-              Continue Anyway
-            </button>
-          </div>
-        </div>
-      </div>
-    )}
+
     <div className="h-screen w-screen flex bg-slate-100 font-sans transition-colors overflow-hidden">
       <input ref={fontUploadRef} type="file" accept=".ttf,.otf,.woff,.woff2" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUploadFont(f); e.currentTarget.value = ''; }} />
       {/* CONTEXTUAL TOOLBAR */}
