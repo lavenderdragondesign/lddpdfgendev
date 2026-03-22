@@ -12,7 +12,8 @@ import {
   Maximize, Upload, Link as LinkIcon2, CloudDrizzle, ShoppingBag as ShopifyIcon, Laptop,
   Layout, Minimize2, ChevronRight, ChevronDown, ChevronUp, EyeOff, Search, QrCode, Heart, Coffee, FolderOpen,
   Waves, MousePointer, FileJson, Sparkles, Bold, Italic, Underline, ChevronLeft,
-  ArrowUpToLine, ArrowDownToLine, ArrowUp, ArrowDown, Hand, ZoomIn, Check
+  ArrowUpToLine, ArrowDownToLine, ArrowUp, ArrowDown, Hand, ZoomIn, Check,
+  MessageSquarePlus, Smartphone, Image as ImageExport, SlidersHorizontal, Shuffle, RefreshCw
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
@@ -74,7 +75,7 @@ const INITIAL_CONFIG: PDFConfig = {
     showQR: false,
   },
   socials: {
-    facebook: '', instagram: '', etsy: '', website: '', shopify: '', woo: '',
+    facebook: '', instagram: '', etsy: '', website: '', shopify: '', woo: '', pinterest: '', tiktok: '', customIcon: '', customLink: '',
     genQR: false,
   },
   paper: { size: 'US Letter', orientation: 'portrait', bleed: 'None' },
@@ -680,6 +681,12 @@ const previewGoogleFont = useCallback((family: string) => {
   });
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [openProjectTab, setOpenProjectTab] = useState<'recent' | 'presets'>('recent');
+  const [showSuggestBox, setShowSuggestBox] = useState(false);
+  const [suggestText, setSuggestText] = useState('');
+  const [suggestSent, setSuggestSent] = useState(false);
+  const [showMobilePreview, setShowMobilePreview] = useState(false);
+  const [mobilePreviewImg, setMobilePreviewImg] = useState<string | null>(null);
+  const [exportScale, setExportScale] = useState<1|2|3>(2);
   const [newProjectNameInput, setNewProjectNameInput] = useState('');
   const [showGetStarted, setShowGetStarted] = useState(false);
   const [getStartedDontShow, setGetStartedDontShow] = useState(false);
@@ -761,7 +768,22 @@ useEffect(() => {
     };
   }, [contextMenu]);
 
-  // --- AI Settings (per-user key stored locally) ---
+  const [showExportPopup, setShowExportPopup] = useState(false);
+  const [showPngResPopup, setShowPngResPopup] = useState(false);
+
+  // Close export popup on outside click
+  useEffect(() => {
+    if (!showExportPopup) return;
+    const close = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-export-popup]')) {
+        setShowExportPopup(false);
+        setShowPngResPopup(false);
+      }
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [showExportPopup]);
   const [showSettings, setShowSettings] = useState(false);
   const [restoreDontAsk, setRestoreDontAsk] = useState(false);
 
@@ -819,11 +841,11 @@ useEffect(() => {
   // Auto-toggle socials visibility (show only when at least one social link is filled)
   useEffect(() => {
     const s = config.socials;
-    const has = Boolean((s.facebook||'').trim() || (s.instagram||'').trim() || (s.etsy||'').trim() || (s.website||'').trim() || (s.shopify||'').trim() || (s.woo||'').trim());
+    const has = Boolean((s.facebook||'').trim() || (s.instagram||'').trim() || (s.etsy||'').trim() || (s.website||'').trim() || (s.shopify||'').trim() || (s.woo||'').trim() || (s.pinterest||'').trim() || (s.tiktok||'').trim() || (s.customLink||'').trim());
     if (config.visibility.socials !== has) {
       setConfig(prev => ({ ...prev, visibility: { ...prev.visibility, socials: has } }));
     }
-  }, [config.socials.facebook, config.socials.instagram, config.socials.etsy, config.socials.website, config.socials.shopify, config.socials.woo]);
+  }, [config.socials.facebook, config.socials.instagram, config.socials.etsy, config.socials.website, config.socials.shopify, config.socials.woo, config.socials.pinterest, config.socials.tiktok, config.socials.customLink]);
   useEffect(() => {
     // If the "Open Recent" modal is open and the user hasn't chosen yet,
     // do NOT autosave the blank INITIAL_CONFIG over their real saved work.
@@ -1076,6 +1098,53 @@ useEffect(() => {
     if (localStorage.getItem('ldd_get_started_hidden') !== '1') {
       setShowGetStarted(true);
     }
+  };
+
+  // Render canvas to image when mobile preview opens OR config changes while open
+  useEffect(() => {
+    if (!showMobilePreview) { setMobilePreviewImg(null); return; }
+    const canvas = document.getElementById('pdf-canvas');
+    if (!canvas) return;
+    setMobilePreviewImg(null);
+    // Small delay to let React flush any pending DOM updates first
+    const t = setTimeout(() => {
+      renderElementForExport(canvas as HTMLElement, config.colors.background).then(c => {
+        setMobilePreviewImg(c.toDataURL('image/png'));
+      }).catch(() => {});
+    }, 100);
+    return () => clearTimeout(t);
+  }, [showMobilePreview, config]);
+
+  const handleExportPNG = async () => {
+    const canvas = document.getElementById('pdf-canvas');
+    if (!canvas) return;
+    try {
+      const c = await renderElementForExport(canvas as HTMLElement, config.colors.background);
+      const finalCanvas = document.createElement('canvas');
+      finalCanvas.width = c.width * exportScale / 2;
+      finalCanvas.height = c.height * exportScale / 2;
+      const ctx = finalCanvas.getContext('2d');
+      if (!ctx) return;
+      ctx.scale(exportScale / 2, exportScale / 2);
+      ctx.drawImage(c, 0, 0);
+      pendingPngRef.current = finalCanvas.toDataURL('image/png');
+      setRenamePngValue('');
+      setRenamePngModalOpen(true);
+    } catch (e) { alert('PNG export failed. Please try again.'); }
+  };
+
+  const handleGlobalFontSwitch = (family: string) => {
+    if (!family || family === '__add_new__') return;
+    setConfig(prev => ({
+      ...prev,
+      fonts: {
+        ...prev.fonts,
+        global: family,
+        blocks: Object.fromEntries(
+          Object.entries(prev.fonts.blocks).map(([k, v]) => [k, { ...v, family }])
+        ) as any,
+      },
+    }));
   };
 
   const handleSaveProject = () => {
@@ -1650,11 +1719,14 @@ case 'delete':
 
   const activeSocialLinks = useMemo(() => {
     return [
-      { id: 'facebook', icon: Facebook, link: config.socials.facebook },
-      { id: 'instagram', icon: Instagram, link: config.socials.instagram },
-      { id: 'etsy', icon: ShoppingBag, link: config.socials.etsy },
-      { id: 'website', icon: Globe, link: config.socials.website },
-      { id: 'shopify', icon: Store, link: config.socials.shopify }
+      { id: 'facebook', icon: Facebook, link: config.socials.facebook, customImg: null },
+      { id: 'instagram', icon: Instagram, link: config.socials.instagram, customImg: null },
+      { id: 'pinterest', icon: Heart, link: (config.socials as any).pinterest, customImg: null },
+      { id: 'tiktok', icon: Sparkles, link: (config.socials as any).tiktok, customImg: null },
+      { id: 'etsy', icon: ShoppingBag, link: config.socials.etsy, customImg: null },
+      { id: 'website', icon: Globe, link: config.socials.website, customImg: null },
+      { id: 'shopify', icon: Store, link: config.socials.shopify, customImg: null },
+      { id: 'custom', icon: Globe, link: (config.socials as any).customLink, customImg: (config.socials as any).customIcon || null },
     ].filter(s => !!s.link);
   }, [config.socials]);
 
@@ -1710,6 +1782,9 @@ case 'delete':
 	  const [renameModalOpen, setRenameModalOpen] = useState(false);
 	  const [renameDefault, setRenameDefault] = useState('export.pdf');
 	  const [renameValue, setRenameValue] = useState('');
+  const pendingPngRef = useRef<string | null>(null);
+  const [renamePngModalOpen, setRenamePngModalOpen] = useState(false);
+  const [renamePngValue, setRenamePngValue] = useState('');
 
   
   // --- Export font stabilization ---
@@ -1833,7 +1908,7 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
   const baseOpts: any = {
     useCORS: true,
     allowTaint: false,
-    scale: 2,
+    scale: exportScale,
     backgroundColor: bgColor,
     letterRendering: false,
     width: el.offsetWidth,
@@ -2456,14 +2531,14 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
           <div className="space-y-4">
              <h3 className="text-sm font-black text-slate-900 uppercase">Social Presence</h3>
              <p className="text-[10px] font-bold text-slate-400 italic">Links will be added to the PDF footer.</p>
-             {['facebook', 'instagram', 'etsy', 'website', 'shopify'].map(key => (
+             {['facebook', 'instagram', 'pinterest', 'tiktok', 'etsy', 'website', 'shopify'].map(key => (
                <div key={key}>
-                 <label className="text-[10px] font-black text-slate-900 uppercase">{key}</label>
+                 <label className="text-[10px] font-black text-slate-900 uppercase">{key === 'tiktok' ? 'TikTok' : key === 'pinterest' ? 'Pinterest' : key}</label>
                  <div className="flex items-center gap-3 mt-1 p-3 bg-white border-2 border-slate-100 rounded-2xl">
                    <Share2 size={16} className="text-slate-400" />
-                   <input 
-                     className="flex-1 bg-transparent text-xs font-black outline-none" 
-                     value={(config.socials as any)[key]} 
+                   <input
+                     className="flex-1 bg-transparent text-xs font-black outline-none"
+                     value={(config.socials as any)[key] || ''}
                      onChange={e => updateConfig(`socials.${key}`, e.target.value)}
                      onBlur={e => {
                        const v = e.target.value.trim();
@@ -2471,11 +2546,33 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
                          updateConfig(`socials.${key}`, 'https://' + v);
                        }
                      }}
-                     placeholder="https://..." 
+                     placeholder="https://..."
                    />
                  </div>
                </div>
              ))}
+             {/* Custom social icon */}
+             <div>
+               <label className="text-[10px] font-black text-slate-900 uppercase">Custom Platform</label>
+               <div className="flex items-center gap-3 mt-1 p-3 bg-white border-2 border-slate-100 rounded-2xl">
+                 <Share2 size={16} className="text-slate-400" />
+                 <input
+                   className="flex-1 bg-transparent text-xs font-black outline-none"
+                   value={(config.socials as any).customLink || ''}
+                   onChange={e => updateConfig('socials.customLink', e.target.value)}
+                   onBlur={e => { const v = e.target.value.trim(); if (v && !/^https?:\/\//i.test(v)) updateConfig('socials.customLink', 'https://' + v); }}
+                   placeholder="https://..."
+                 />
+               </div>
+               <div className="mt-2 flex items-center gap-3">
+                 <label className="text-[10px] font-black text-slate-400 uppercase">Custom Icon</label>
+                 <label className="cursor-pointer flex items-center gap-2 px-3 py-1.5 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 text-slate-600 rounded-xl font-black text-[10px] transition-all">
+                   <Upload size={12} /> {(config.socials as any).customIcon ? 'Change' : 'Upload'}
+                   <input type="file" hidden accept="image/*" onChange={e => { const f = e.target.files?.[0]; if (!f) return; const r = new FileReader(); r.onload = ev => updateConfig('socials.customIcon', ev.target?.result as string); r.readAsDataURL(f); }} />
+                 </label>
+                 {(config.socials as any).customIcon && <img src={(config.socials as any).customIcon} className="w-6 h-6 rounded object-contain" />}
+               </div>
+             </div>
              <div className="p-4 bg-white border-2 border-slate-100 rounded-2xl space-y-2">
                <div className="flex items-center justify-between">
                  <label className="text-[10px] font-black text-slate-900 uppercase">Icon Size</label>
@@ -2935,10 +3032,10 @@ const renderTipsPanel = () => {
             
             {activeElementProps.isText && activeFont && (
               <>
-                <div className="flex items-center gap-3">
-                  <Type size={16} className="text-slate-400" />
+                <div className="flex items-center gap-2">
+                  <Type size={16} className="text-slate-400 shrink-0" />
                   <select 
-                    className="bg-transparent text-xs font-black outline-none border-none cursor-pointer hover:text-indigo-600 transition-colors"
+                    className="bg-transparent text-xs font-black outline-none border-none cursor-pointer hover:text-indigo-600 transition-colors max-w-[140px]"
                     value={activeFont.family || (activeFont as any).fontFamily || 'Inter'}
                     onChange={e => {
                       if (e.target.value === '__add_new__') { setFontManagerOpen(true); return; }
@@ -2950,6 +3047,54 @@ const renderTipsPanel = () => {
                     <option disabled>──────────</option>
                     <option value="__add_new__">+ Add New Font...</option>
                   </select>
+                  {/* Fonts manager button — next to dropdown */}
+                  <div className="relative group/fonts shrink-0">
+                    <button
+                      onClick={() => setFontManagerOpen(true)}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 inline-flex items-center gap-1.5 text-[10px] font-black border border-slate-200"
+                    >
+                      <Type size={13} className="text-indigo-500" />
+                      Fonts
+                    </button>
+                    <div className="absolute top-full left-0 mt-2 w-64 opacity-0 group-hover/fonts:opacity-100 pointer-events-none transition-all duration-150 z-[200]">
+                      <div className="w-2.5 h-2.5 bg-white border-l border-t border-slate-200 rotate-45 absolute -top-1.5 left-4" />
+                      <div className="bg-white border-2 border-slate-200 rounded-2xl p-3.5 shadow-xl">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Type size={13} className="text-indigo-500 shrink-0" />
+                          <span className="text-[11px] font-black uppercase tracking-widest text-slate-900">Font Manager</span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 leading-relaxed">Install Google Fonts or upload custom fonts (.ttf/.otf/.woff). Installed fonts appear in the dropdown.</p>
+                        <div className="mt-2.5 pt-2.5 border-t border-slate-100 text-[9px] text-indigo-500 font-black">Click to open Font Manager →</div>
+                      </div>
+                    </div>
+                  </div>
+                  {/* Switch All Fonts button — applies selected font to all blocks */}
+                  <div className="relative group/switchall shrink-0">
+                    <button
+                      onClick={() => {
+                        const fam = activeFont.family || (activeFont as any).fontFamily || 'Inter';
+                        handleGlobalFontSwitch(fam);
+                      }}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 text-slate-500 inline-flex items-center gap-1.5 text-[10px] font-black border border-slate-200"
+                    >
+                      <Shuffle size={13} />
+                      Switch All
+                    </button>
+                    <div className="absolute top-full left-0 mt-2 w-72 opacity-0 group-hover/switchall:opacity-100 pointer-events-none transition-all duration-150 z-[200]">
+                      <div className="w-2.5 h-2.5 bg-white border-l border-t border-slate-200 rotate-45 absolute -top-1.5 left-4" />
+                      <div className="bg-white border-2 border-slate-200 rounded-2xl p-3.5 shadow-xl">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Shuffle size={13} className="text-indigo-500 shrink-0" />
+                          <span className="text-[11px] font-black uppercase tracking-widest text-slate-900">Switch All Fonts</span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 leading-relaxed">Applies the currently selected font to <span className="text-slate-900 font-black">every text element</span> on the canvas at once.</p>
+                        <div className="mt-2.5 pt-2.5 border-t border-slate-100 space-y-1.5">
+                          <div className="text-[9px] text-slate-500 font-bold flex items-center gap-1.5"><span className="text-indigo-500 font-black">1.</span> Install or select a font from the dropdown</div>
+                          <div className="text-[9px] text-slate-500 font-bold flex items-center gap-1.5"><span className="text-indigo-500 font-black">2.</span> Click Switch All to apply everywhere</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-1 border-l pl-6 border-slate-200">
@@ -2990,7 +3135,7 @@ const renderTipsPanel = () => {
 
                 
 
-{/* GROUP: Align + Layer Order + Custom Font Upload */}
+{/* GROUP: Align + Layer Order */}
 <div className="flex items-center gap-1 border-l pl-6 border-slate-200">
   <button onClick={() => handleAction('align-left')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Align Left"><AlignLeft size={16}/></button>
   <button onClick={() => handleAction('align-center')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Align Center"><AlignCenter size={16}/></button>
@@ -2998,15 +3143,6 @@ const renderTipsPanel = () => {
   <div className="w-px h-6 bg-slate-200 mx-2" />
   <button onClick={() => handleAction('sendToBack')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Send to Back"><ArrowDownToLine size={16}/></button>
   <button onClick={() => handleAction('bringToFront')} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Bring to Front"><ArrowUpToLine size={16}/></button>
-  <div className="w-px h-6 bg-slate-200 mx-2" />
-  <button
-    onClick={() => handleAction('upload-font')}
-    className="px-3 py-2 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 inline-flex items-center gap-2 text-xs font-black border border-slate-200"
-    title="Font Manager"
-  >
-    <Type size={16} className="text-slate-500" />
-    Fonts
-  </button>
 </div>
 
 <div className="flex items-center gap-4 border-l pl-6 border-slate-200">
@@ -3243,6 +3379,117 @@ const renderTipsPanel = () => {
         </div>
       )}
 
+      {/* Mobile Preview modal */}
+      {showMobilePreview && (
+        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/70 backdrop-blur-sm p-6">
+          <div className="bg-slate-100 rounded-[32px] p-6 max-w-sm w-full shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Smartphone size={16} className="text-indigo-600" />
+                <span className="text-sm font-black text-slate-900">Mobile Preview</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => {
+                    const canvas = document.getElementById('pdf-canvas');
+                    if (!canvas) return;
+                    setMobilePreviewImg(null);
+                    setTimeout(() => {
+                      renderElementForExport(canvas as HTMLElement, config.colors.background).then(c => {
+                        setMobilePreviewImg(c.toDataURL('image/png'));
+                      }).catch(() => {});
+                    }, 100);
+                  }}
+                  className="p-2 rounded-xl hover:bg-slate-200 text-slate-400 hover:text-indigo-600 transition-all"
+                  title="Refresh preview"
+                >
+                  <RefreshCw size={15} />
+                </button>
+                <button onClick={() => setShowMobilePreview(false)} className="p-2 rounded-xl hover:bg-slate-200 text-slate-400"><X size={16} /></button>
+              </div>
+            </div>
+            {/* Phone frame */}
+            <div className="bg-slate-900 rounded-[28px] p-2 mx-auto" style={{ width: 260 }}>
+              <div className="bg-white rounded-[20px] overflow-hidden" style={{ height: 520 }}>
+                <div
+                  style={{
+                    transform: `scale(${260 / 816})`,
+                    transformOrigin: 'top left',
+                    width: 816,
+                    height: 1056,
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {mobilePreviewImg
+                    ? <img src={mobilePreviewImg} style={{ width: 816, height: 1056, display: 'block' }} />
+                    : <div style={{ width: 816, height: 1056, backgroundColor: config.colors.background, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Loader2 size={32} className="text-indigo-400 animate-spin" /></div>
+                  }
+                </div>
+              </div>
+            </div>
+            <p className="text-[10px] text-center text-slate-400 mt-3 font-bold">Approximate mobile screen ratio at 65% zoom</p>
+          </div>
+        </div>
+      )}
+
+      {/* Suggest a Feature modal */}
+      {showSuggestBox && (
+        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/50 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] p-8 max-w-sm w-full shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-black text-slate-900">Suggest a Feature</h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">What would make this tool better for you?</p>
+              </div>
+              <button onClick={() => { setShowSuggestBox(false); setSuggestSent(false); setSuggestText(''); }} className="p-2 rounded-xl hover:bg-slate-100 text-slate-400"><X size={16} /></button>
+            </div>
+            {suggestSent ? (
+              <div className="text-center py-8">
+                <Check size={32} className="text-emerald-500 mx-auto mb-3" />
+                <p className="text-sm font-black text-slate-900">Thanks for the suggestion!</p>
+                <p className="text-[11px] text-slate-400 mt-1">We read every one.</p>
+                <button onClick={() => { setSuggestSent(false); setSuggestText(''); }} className="mt-4 text-[11px] font-black text-indigo-600 hover:underline">Send another</button>
+              </div>
+            ) : (
+              <>
+                <textarea
+                  autoFocus
+                  value={suggestText}
+                  onChange={e => setSuggestText(e.target.value)}
+                  placeholder="e.g. I'd love to be able to..."
+                  className="w-full p-4 bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none rounded-2xl text-sm font-medium h-32 resize-none transition-all mb-4"
+                />
+                <button
+                  disabled={!suggestText.trim()}
+                  onClick={async () => {
+                    try {
+                      await fetch('/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({
+                          'form-name': 'suggestions',
+                          'suggestion': suggestText.trim(),
+                        }).toString(),
+                      });
+                    } catch {}
+                    // Also save locally as backup
+                    try {
+                      const existing = JSON.parse(localStorage.getItem('ldd_suggestions') || '[]');
+                      existing.push({ text: suggestText.trim(), at: new Date().toISOString() });
+                      localStorage.setItem('ldd_suggestions', JSON.stringify(existing));
+                    } catch {}
+                    setSuggestSent(true);
+                  }}
+                  className="w-full py-3 bg-indigo-600 text-white rounded-2xl font-black text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                >
+                  Send Suggestion
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Export warnings modal */}
       {exportWarnings && (
         <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
@@ -3374,6 +3621,75 @@ const renderTipsPanel = () => {
 	        </div>
 	      )}
 
+      {/* PNG Rename Modal */}
+      {renamePngModalOpen && (
+        <div className="fixed inset-0 z-[235] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] p-7 max-w-md w-full shadow-2xl border border-slate-100">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 bg-slate-50 rounded-2xl flex items-center justify-center shrink-0">
+                <ImageExport className="text-slate-700" size={24} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-black text-slate-900">Name your PNG</h3>
+                <p className="text-xs text-slate-600 mt-1">Rename it now, or skip and use the default.</p>
+              </div>
+              <button
+                onClick={() => { setRenamePngModalOpen(false); pendingPngRef.current = null; }}
+                className="p-2 rounded-xl hover:bg-slate-100"
+                title="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="mt-4">
+              <label className="text-[11px] font-black text-slate-700 uppercase">File name</label>
+              <input
+                value={renamePngValue}
+                onChange={(e) => setRenamePngValue(e.target.value)}
+                className="mt-2 w-full px-4 py-3 rounded-2xl border-2 border-slate-200 focus:outline-none focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 font-bold"
+                placeholder="Exported_PDF_PNG"
+              />
+              <div className="text-[11px] text-slate-500 mt-2">Tip: ".png" will be added if you forget it.</div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  const dataUrl = pendingPngRef.current;
+                  if (!dataUrl) return;
+                  const link = document.createElement('a');
+                  link.download = 'Exported_PDF_PNG.png';
+                  link.href = dataUrl;
+                  link.click();
+                  pendingPngRef.current = null;
+                  setRenamePngModalOpen(false);
+                }}
+                className="flex-1 py-3 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200"
+              >
+                Skip
+              </button>
+              <button
+                onClick={() => {
+                  const dataUrl = pendingPngRef.current;
+                  if (!dataUrl) return;
+                  const raw = (renamePngValue || 'Exported_PDF_PNG').trim();
+                  if (!raw) return;
+                  const safe = raw.toLowerCase().endsWith('.png') ? raw : `${raw}.png`;
+                  const link = document.createElement('a');
+                  link.download = safe;
+                  link.href = dataUrl;
+                  link.click();
+                  pendingPngRef.current = null;
+                  setRenamePngModalOpen(false);
+                }}
+                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-100 hover:bg-indigo-700"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
 
 
@@ -3427,13 +3743,88 @@ const renderTipsPanel = () => {
           </div>
         </header>
         <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">{renderTabContent()}</div>
-        <div className="p-6 bg-slate-50 border-t-2 border-slate-100">
-          <div className="flex gap-3 mb-4">
+        <div className="p-4 bg-slate-50 border-t-2 border-slate-100 space-y-3">
+          {/* Main export buttons */}
+          <div className="flex gap-3">
             <button onClick={() => handleExportPDF(true)} className="flex-1 py-4 bg-white border-2 border-slate-200 text-slate-900 rounded-2xl font-black text-xs hover:bg-slate-50 transition-all flex items-center justify-center gap-2"><Eye size={16} /> Preview</button>
-            <button onClick={() => handleExportPDF(false)} className="flex-[1.5] py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200 flex items-center justify-center gap-2"><Download size={16} /> Export PDF</button>
-          </div>
+            {/* Export button — click opens white card popup */}
+            <div className="relative flex-[1.5]" data-export-popup>
+              <button
+                onClick={() => { setShowExportPopup(v => !v); setShowPngResPopup(false); }}
+                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200 flex items-center justify-center gap-2"
+              >
+                <Download size={16} /> Export
+              </button>
+
+              {/* Main export card popup */}
+              {showExportPopup && (
+                <div className="absolute bottom-full mb-3 left-0 right-0 z-[200]">
+                  {/* caret */}
+                  <div className="w-3 h-3 bg-white border-l-2 border-t-2 border-slate-200 rotate-45 absolute -bottom-1.5 left-1/2 -translate-x-1/2" />
+                  <div className="bg-white border-2 border-slate-200 rounded-2xl shadow-2xl p-3 space-y-2">
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1">Export as</p>
+
+                    {/* PDF button */}
+                    <button
+                      onClick={() => { handleExportPDF(false); setShowExportPopup(false); }}
+                      className="w-full px-4 py-3 bg-indigo-50 hover:bg-indigo-100 border-2 border-indigo-100 rounded-2xl flex items-center gap-3 text-xs font-black text-indigo-700 transition-all"
+                    >
+                      <Download size={15} className="text-indigo-600 shrink-0" />
+                      <span>PDF</span>
+                    </button>
+
+                    {/* PNG button — click opens resolution sub-popup */}
+                    <div className="relative">
+                      <button
+                        onClick={() => setShowPngResPopup(v => !v)}
+                        className="w-full px-4 py-3 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-2xl flex items-center gap-3 text-xs font-black text-slate-700 transition-all"
+                      >
+                        <ImageExport size={15} className="text-slate-500 shrink-0" />
+                        <span className="flex-1 text-left">PNG</span>
+                        <ChevronRight size={13} className={`text-slate-300 transition-transform ${showPngResPopup ? 'rotate-90' : ''}`} />
+                      </button>
+
+                      {/* PNG resolution + note sub-popup */}
+                      {showPngResPopup && (
+                        <div className="mt-2 bg-white border-2 border-slate-200 rounded-2xl shadow-xl p-3 space-y-2">
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1">Resolution</p>
+                          <div className="flex gap-2">
+                            {([1, 2, 3] as const).map(s => (
+                              <button
+                                key={s}
+                                onClick={() => setExportScale(s)}
+                                className={`flex-1 py-2 rounded-xl text-[10px] font-black transition-all border-2 ${exportScale === s ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-indigo-300'}`}
+                              >
+                                {s}x
+                              </button>
+                            ))}
+                          </div>
+                          <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                            <span className="text-amber-500 text-[11px] shrink-0">⚠</span>
+                            <p className="text-[9px] font-bold text-amber-700 leading-relaxed">PNG has no clickable links. Best for cards &amp; social posts.</p>
+                          </div>
+                          <button
+                            onClick={() => { handleExportPNG(); setShowExportPopup(false); setShowPngResPopup(false); }}
+                            className="w-full py-2.5 bg-slate-900 hover:bg-slate-700 text-white rounded-xl font-black text-[10px] transition-all flex items-center justify-center gap-1.5"
+                          >
+                            <Download size={12} /> Export PNG
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
+      </div>{/* END MAIN PROPERTY SIDEBAR */}
+
+      {/* Fixed bottom-right corner: Mobile Preview + Suggest */}
+      <div className="fixed bottom-6 right-6 z-[150] flex flex-col items-end gap-2 no-print">
+        <button onClick={() => setShowMobilePreview(true)} className="py-2.5 px-3.5 bg-white border-2 border-slate-200 text-slate-500 rounded-2xl font-black text-[10px] hover:border-indigo-400 hover:text-indigo-600 transition-all shadow-lg flex items-center justify-center gap-1.5"><Smartphone size={14} /></button>
+        <button onClick={() => setShowSuggestBox(true)} className="py-2.5 px-3.5 bg-white border-2 border-slate-200 text-slate-500 rounded-2xl font-black text-[10px] hover:border-indigo-400 hover:text-indigo-600 transition-all shadow-lg flex items-center gap-1.5"><MessageSquarePlus size={14} /><span>Suggest</span></button>
+      </div>
 
       {/* RE-OPEN SIDEBAR BUTTON (Visible when minimized) */}
       {isSidebarMinimized && (
@@ -3596,18 +3987,18 @@ const renderTipsPanel = () => {
                 onBlur={(e) => { if (blockId !== 'socials') updateConfig(`content.${blockId}`, (e.target as HTMLElement).innerText); setEditingId(null); }}
               >
                 {blockId === 'socials' ? (
-                  <div className="flex flex-col gap-2">
-                    <div className="flex gap-4 items-center">
-                      {activeSocialLinks.length > 0 ? activeSocialLinks.map((social, idx) => {
-                        const size = Math.max(14, config.fonts.blocks.socials.size * 1.2);
-                        return (
-                          <div key={idx} className="flex items-center gap-1 opacity-80 hover:opacity-100 transition-opacity">
-                            <social.icon size={size} />
-                            {activeSocialLinks.length < 3 && <span className="text-[0.8em] font-bold">{social.id}</span>}
-                          </div>
-                        );
-                      }) : <span className="text-[0.8em] italic opacity-50">Social Links (Add in Sidebar)</span>}
-                    </div>
+                  <div className="w-full h-full flex items-center">
+                    {activeSocialLinks.length > 0 ? activeSocialLinks.map((social, idx) => {
+                      const size = Math.max(14, config.fonts.blocks.socials.size * 1.2);
+                      return (
+                        <div key={idx} className="flex items-center justify-center opacity-80" style={{ flex: 1 }}>
+                          {social.customImg
+                            ? <img src={social.customImg} style={{ width: size, height: size }} className="object-contain" />
+                            : <social.icon size={size} />
+                          }
+                        </div>
+                      );
+                    }) : <span className="text-[0.8em] italic opacity-50 w-full text-center">Social Links (Add in Sidebar)</span>}
                   </div>
                 ) : (
                   (config.content as any)[blockId]

@@ -58,6 +58,11 @@
 <link rel="stylesheet" href="/index.css">
 </head>
 <body>
+    <!-- Netlify form for feature suggestions (hidden, detected at build time) -->
+    <form name="suggestions" netlify netlify-honeypot="bot-field" hidden>
+      <input type="text" name="suggestion" />
+    </form>
+
     <div id="root"></div>
 <script type="module" src="/index.tsx"></script>
 </body>

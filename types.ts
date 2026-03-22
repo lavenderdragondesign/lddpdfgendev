@@ -126,6 +126,10 @@ export interface PDFConfig {
     website: string;
     shopify: string;
     woo: string;
+    pinterest: string;
+    tiktok: string;
+    customIcon: string; // base64 image
+    customLink: string;
     genQR: boolean;
   };
   paper: {
