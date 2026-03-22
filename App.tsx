@@ -682,7 +682,7 @@ const previewGoogleFont = useCallback((family: string) => {
   const [newProjectNameInput, setNewProjectNameInput] = useState('');
   const [showGetStarted, setShowGetStarted] = useState(false);
   const [getStartedDontShow, setGetStartedDontShow] = useState(false);
-  const [toolbarMode, setToolbarMode] = useState<'auto' | 'show' | 'hide'>(() => { const s = localStorage.getItem('ldd_toolbar_mode'); return s === 'hide' || s === 'auto' ? s as any : 'show'; });
+  const [toolbarMode, setToolbarMode] = useState<'auto' | 'show' | 'hide'>('show');
   const [showToolbarSettings, setShowToolbarSettings] = useState(false);
 
 // Tips panel (docked on the right side of the editor viewport)
@@ -802,8 +802,11 @@ useEffect(() => {
     if (savedWork && !skipRestore) {
       setRestoreModal(true);
     } else if (!savedWork && localStorage.getItem('ldd_get_started_hidden') !== '1') {
-      // Brand new user — show get started after a short delay so onboarding shows first
-      setTimeout(() => setShowGetStarted(true), 300);
+      // Brand new user — show get started only if welcome is already dismissed
+      if (localStorage.getItem('lavender_welcome_hidden')) {
+        setTimeout(() => setShowGetStarted(true), 300);
+      }
+      // Otherwise it fires from the welcome "Let's Go" button handler
     }
   }, []);
 
@@ -1793,6 +1796,7 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
     pointer-events: none !important;
     opacity: 1 !important;
     visibility: visible !important;
+    background-color: ${bgColor} !important;
   `;
   document.body.appendChild(clone);
 
@@ -2229,6 +2233,12 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
         pdf.link(qr.x * scaleX, qr.y * scaleY, qr.w * scaleX, qr.h * scaleY, { url: config.source.link });
       }
 
+      // Add links for extra button layers (use their own link, or fall back to main download link)
+      config.layout.extraLayers.filter(l => l.type === 'button' && l.visible !== false).forEach(l => {
+        const url = (l.content || '').trim() || config.source.link;
+        if (url) pdf.link(l.x * scaleX, l.y * scaleY, l.w * scaleX, l.h * scaleY, { url });
+      });
+
       // Add links for socials
       if (config.visibility.socials && activeSocialLinks.length > 0) {
         const sb = config.layout.blocks.socials;
@@ -2278,7 +2288,7 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
               {[
                 { id: 'upload', icon: Upload, label: 'Upload' },
                 { id: 'link', icon: LinkIcon2, label: 'Manual Link' },
-                { id: 'drive', icon: HardDrive, label: 'G-Drive' },
+                { id: 'drive', icon: HardDrive, label: 'Google Drive' },
                 { id: 'one', icon: Cloud, label: 'OneDrive' },
                 { id: 'shopify', icon: ShopifyIcon, label: 'Shopify' }
               ].map(mode => (
@@ -2321,7 +2331,7 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
                      const isWoo = /woocommerce|\/product\//i.test(url);
                      const hasDetected = !!url;
 
-                     const modeLabel = isDrive ? 'G-Drive' : isOneDrive ? 'OneDrive' : isShopify ? 'Shopify' : isWoo ? 'WooCommerce' : 'Manual Link';
+                     const modeLabel = isDrive ? 'Google Drive' : isOneDrive ? 'OneDrive' : isShopify ? 'Shopify' : isWoo ? 'WooCommerce' : 'Manual Link';
                      const modeId = isDrive ? 'drive' : isOneDrive ? 'one' : isShopify ? 'shopify' : isWoo ? 'woo' : 'link';
 
                      return (
@@ -2400,19 +2410,6 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
               </div>
             </div>
             <div className="pt-6 border-t border-slate-100">
-              <h3 className="text-sm font-black text-slate-900 uppercase mb-4">Add Layers</h3>
-              <div className="grid grid-cols-2 gap-3 mb-6">
-                <button onClick={() => {
-                  const nid = `text-${Date.now()}`;
-                  updateConfig('layout.extraLayers', [...config.layout.extraLayers, { id: nid, type: 'text', content: 'New Text Layer', x: 200, y: 200, w: 200, h: 40, fontSize: 16, visible: true, fontFamily: 'Inter', align: 'center', color: '#000000' }]);
-                  setSelectedId(nid);
-                }} className="flex flex-col items-center gap-2 p-4 bg-white border-2 border-slate-100 rounded-2xl hover:border-indigo-600 transition-all">
-                  <Type size={24} /> <span className="text-[10px] font-black uppercase text-center">Add Text Layer</span>
-                </button>
-                <button onClick={() => extraImgInputRef.current?.click()} className="flex flex-col items-center gap-2 p-4 bg-white border-2 border-slate-100 rounded-2xl hover:border-indigo-600 transition-all">
-                  <ImageIcon size={24} /> <span className="text-[10px] font-black uppercase text-center">Add Image Layer</span>
-                </button>
-              </div>
               <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-start gap-2">
                 <Layers size={13} className="text-indigo-500 mt-0.5 shrink-0" />
                 <p className="text-[10px] font-black text-indigo-700 leading-snug">Layer visibility is controlled from the <span className="underline">Layers panel</span> floating on the canvas — click the Layers button on the canvas to open it.</p>
@@ -2516,6 +2513,42 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
         return (
           <div className="space-y-5">
             <h3 className="text-base font-black text-slate-900 uppercase">Text Content</h3>
+
+            {/* Extra button layers — show link + label editor */}
+            {config.layout.extraLayers.filter(l => l.type === 'button').length > 0 && (
+              <div className="space-y-3">
+                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Extra Download Buttons</h4>
+                {config.layout.extraLayers.filter(l => l.type === 'button').map(l => (
+                  <div key={l.id} className="p-4 bg-white border-2 border-slate-100 rounded-2xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-black text-slate-700">{l.label || 'Download Button'}</span>
+                      <button onClick={() => updateConfig('layout.extraLayers', config.layout.extraLayers.filter(x => x.id !== l.id))} className="p-1 text-red-400 hover:text-red-600 transition-all"><Trash2 size={13}/></button>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase">Button Label</label>
+                      <input
+                        className="w-full mt-1 p-2.5 bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none rounded-xl text-xs font-black transition-all"
+                        value={l.label || ''}
+                        onChange={e => updateConfig('layout.extraLayers', config.layout.extraLayers.map(x => x.id === l.id ? { ...x, label: e.target.value } : x))}
+                        placeholder="Download Now"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase">Download Link <span className="text-slate-300">(optional)</span></label>
+                      <div className="flex gap-2 mt-1 p-2.5 bg-slate-50 border-2 border-transparent focus-within:border-indigo-500 rounded-xl transition-all">
+                        <LinkIcon size={14} className="text-slate-400 shrink-0 mt-0.5" />
+                        <input
+                          className="flex-1 bg-transparent text-xs font-black outline-none"
+                          value={l.content || ''}
+                          onChange={e => updateConfig('layout.extraLayers', config.layout.extraLayers.map(x => x.id === l.id ? { ...x, content: e.target.value } : x))}
+                          placeholder="https://... (leave blank to use main link)"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {([
               { key: 'title', label: 'Title' },
@@ -2990,7 +3023,7 @@ const renderTipsPanel = () => {
                 <input type="checkbox" checked={dontShowAgain} onChange={e => setDontShowAgain(e.target.checked)} className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
                 <span className="text-sm font-black text-slate-500 group-hover:text-indigo-600 transition-colors">Don't show this again</span>
               </label>
-              <button onClick={() => { if (dontShowAgain) localStorage.setItem('lavender_welcome_hidden', 'true'); setShowOnboarding(false); }} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-lg hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200">Let's Go</button>
+              <button onClick={() => { if (dontShowAgain) localStorage.setItem('lavender_welcome_hidden', 'true'); setShowOnboarding(false); if (localStorage.getItem('ldd_get_started_hidden') !== '1') setTimeout(() => setShowGetStarted(true), 200); }} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-lg hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200">Let's Go</button>
             </div>
           </div>
         </div>
@@ -3067,7 +3100,7 @@ const renderTipsPanel = () => {
               </button>
               <div className="flex gap-2">
                 {[
-                  { id: 'drive', label: 'G-Drive', icon: HardDrive },
+                  { id: 'drive', label: 'Google Drive', icon: HardDrive },
                   { id: 'one', label: 'OneDrive', icon: Cloud },
                   { id: 'shopify', label: 'Shopify', icon: ShopifyIcon },
                 ].map(({ id, label, icon: Icon }) => (
@@ -3390,19 +3423,19 @@ const renderTipsPanel = () => {
                 </div>
                 <button onClick={() => setLayersPanelOpen(false)} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400"><X size={12} /></button>
               </div>
-              <div className="p-2 space-y-1 max-h-80 overflow-y-auto custom-scrollbar">
+              <div className="p-2 space-y-1 max-h-64 overflow-y-auto custom-scrollbar">
                 <div
                   onClick={() => setSelectedId('watermark')}
                   className={`flex items-center justify-between px-2 py-1.5 rounded-xl border transition-all cursor-pointer ${selectedId === 'watermark' ? 'border-indigo-400 bg-indigo-50' : 'border-transparent hover:bg-slate-50'}`}
                 >
-                  <span className="text-[10px] font-black text-slate-600 capitalize">Watermark</span>
+                  <span className="text-[10px] font-black text-slate-600">Watermark</span>
                   <button onClick={(e) => { e.stopPropagation(); updateConfig('visibility.watermark', !config.visibility.watermark); }} className={`p-1 rounded-lg transition-all ${config.visibility.watermark ? 'text-indigo-600' : 'text-slate-300'}`}>
                     {config.visibility.watermark ? <Eye size={12}/> : <EyeOff size={12}/>}
                   </button>
                 </div>
                 {Object.keys(config.layout.blocks).map(id => id !== 'socials' && (
                   <div key={id} onClick={() => setSelectedId(id)} className={`flex items-center justify-between px-2 py-1.5 rounded-xl border transition-all cursor-pointer ${selectedId === id ? 'border-indigo-400 bg-indigo-50' : 'border-transparent hover:bg-slate-50'}`}>
-                    <span className="text-[10px] font-black text-slate-600 capitalize">{id}</span>
+                    <span className="text-[10px] font-black text-slate-600">{{ title:'Title', shortDesc:'Short Description', mainDesc:'Main Description', button:'Download Button', qr:'QR Code', promo:'Promo Block', footer:'Footer', socials:'Social Links' }[id] || id}</span>
                     <button onClick={(e) => { e.stopPropagation(); updateConfig(`visibility.${id}`, !config.visibility[id]); }} className={`p-1 rounded-lg transition-all ${config.visibility[id] ? 'text-indigo-600' : 'text-slate-300'}`}>
                       {config.visibility[id] ? <Eye size={12}/> : <EyeOff size={12}/>}
                     </button>
@@ -3410,12 +3443,33 @@ const renderTipsPanel = () => {
                 ))}
                 {config.layout.extraLayers.map(l => (
                   <div key={l.id} onClick={() => setSelectedId(l.id)} className={`flex items-center justify-between px-2 py-1.5 rounded-xl border transition-all cursor-pointer ${selectedId === l.id ? 'border-indigo-400 bg-indigo-50' : 'border-transparent hover:bg-slate-50'}`}>
-                    <span className="text-[10px] font-black text-slate-600 truncate max-w-[100px]">{l.type === 'text' ? l.content.slice(0,18) : 'Image'}</span>
-                    <button onClick={(e) => { e.stopPropagation(); updateConfig('layout.extraLayers', config.layout.extraLayers.map(x => x.id === l.id ? { ...x, visible: !x.visible } : x)); }} className={`p-1 rounded-lg transition-all ${l.visible ? 'text-indigo-600' : 'text-slate-300'}`}>
-                      {l.visible ? <Eye size={12}/> : <EyeOff size={12}/>}
+                    <span className="text-[10px] font-black text-slate-600 truncate max-w-[110px]">{l.type === 'button' ? (l.label || 'Download Button') : l.type === 'text' ? l.content : 'Image Layer'}</span>
+                    <button onClick={(e) => { e.stopPropagation(); updateConfig('layout.extraLayers', config.layout.extraLayers.map(x => x.id === l.id ? { ...x, visible: !x.visible } : x)); }} className={`p-1 rounded-lg transition-all ${l.visible !== false ? 'text-indigo-600' : 'text-slate-300'}`}>
+                      {l.visible !== false ? <Eye size={12}/> : <EyeOff size={12}/>}
                     </button>
                   </div>
                 ))}
+              </div>
+              {/* Add layer buttons */}
+              <div className="border-t border-slate-100 p-2 grid grid-cols-3 gap-1">
+                <button
+                  onClick={() => { const nid = `text-${Date.now()}`; updateConfig('layout.extraLayers', [...config.layout.extraLayers, { id: nid, type: 'text', content: 'New Text', x: 200, y: 300, w: 200, h: 40, fontSize: 16, visible: true, fontFamily: 'Inter', align: 'center', color: '#000000' }]); setSelectedId(nid); }}
+                  className="flex flex-col items-center gap-0.5 py-2 bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 text-slate-600 rounded-xl transition-all"
+                >
+                  <Type size={13} /><span className="text-[9px] font-black">Text</span>
+                </button>
+                <button
+                  onClick={() => extraImgInputRef.current?.click()}
+                  className="flex flex-col items-center gap-0.5 py-2 bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 text-slate-600 rounded-xl transition-all"
+                >
+                  <ImageIcon size={13} /><span className="text-[9px] font-black">Image</span>
+                </button>
+                <button
+                  onClick={() => { const nid = `btn-${Date.now()}`; updateConfig('layout.extraLayers', [...config.layout.extraLayers, { id: nid, type: 'button', content: '', label: 'Download Now', x: 208, y: 480, w: 400, h: 60, fontSize: 18, visible: true, fontFamily: 'Inter', align: 'center', color: config.colors.buttonText, bgColor: config.colors.button, bold: true }]); setSelectedId(nid); }}
+                  className="flex flex-col items-center gap-0.5 py-2 bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 text-slate-600 rounded-xl transition-all"
+                >
+                  <Download size={13} /><span className="text-[9px] font-black">Button</span>
+                </button>
               </div>
             </div>
           ) : (
@@ -3610,6 +3664,31 @@ const renderTipsPanel = () => {
                   onBlur={(e) => { updateConfig('layout.extraLayers', config.layout.extraLayers.map(x => x.id === l.id ? { ...x, content: (e.target as HTMLElement).innerText } : x)); setEditingId(null); }}
                 >
                   {l.content}
+                </div>
+              ) : l.type === 'button' ? (
+                <div className="w-full h-full rounded-3xl flex items-center justify-center shadow-xl overflow-hidden relative" style={{ backgroundColor: l.bgColor || config.colors.button }}>
+                  <span
+                    style={{
+                      position: 'absolute', left: '50%', top: '50%',
+                      transform: 'translate(-50%,-50%)',
+                      display: 'inline-block',
+                      whiteSpace: 'nowrap',
+                      padding: '0 18px',
+                      maxWidth: '92%',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      fontFamily: l.fontFamily || config.fonts.global,
+                      fontSize: `${l.fontSize || 18}px`,
+                      fontWeight: l.bold ? 'bold' : '800',
+                      color: l.color || config.colors.buttonText,
+                      textAlign: 'center',
+                    }}
+                    contentEditable={editingId === l.id}
+                    suppressContentEditableWarning={true}
+                    onBlur={(e) => { updateConfig('layout.extraLayers', config.layout.extraLayers.map(x => x.id === l.id ? { ...x, label: (e.target as HTMLElement).innerText } : x)); setEditingId(null); }}
+                  >
+                    {l.label || 'Download Now'}
+                  </span>
                 </div>
               ) : (
                 <img src={l.content} className="w-full h-full object-contain pointer-events-none" />
