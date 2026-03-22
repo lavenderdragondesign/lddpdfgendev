@@ -12,7 +12,7 @@ import {
   Maximize, Upload, Link as LinkIcon2, CloudDrizzle, ShoppingBag as ShopifyIcon, Laptop,
   Layout, Minimize2, ChevronRight, ChevronDown, ChevronUp, EyeOff, Search, QrCode, Heart, Coffee, FolderOpen,
   Waves, MousePointer, FileJson, Sparkles, Bold, Italic, Underline, ChevronLeft,
-  ArrowUpToLine, ArrowDownToLine, ArrowUp, ArrowDown
+  ArrowUpToLine, ArrowDownToLine, ArrowUp, ArrowDown, Hand, ZoomIn, Check
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
@@ -458,7 +458,7 @@ const [googleFontsLoaded, setGoogleFontsLoaded] = useState<string[]>(() => {
 const [googleFontsQuery, setGoogleFontsQuery] = useState<string>('');
 const [googleFontsBusy, setGoogleFontsBusy] = useState<boolean>(false);
 const [googleFontsError, setGoogleFontsError] = useState<string | null>(null);
-const [fontManagerOpen, setFontManagerOpen] = useState<boolean>(() => localStorage.getItem('ldd_font_manager_open') !== '0');
+const [fontManagerOpen, setFontManagerOpen] = useState<boolean>(false);
 const [fontPreviewText, setFontPreviewText] = useState<string>(() => localStorage.getItem('ldd_font_preview_text') || 'The quick brown fox jumps over the lazy dog 123');
 
 const [marquee, setMarquee] = useState<null | { x0: number; y0: number; x1: number; y1: number; additive: boolean }>(null);
@@ -622,6 +622,23 @@ const previewGoogleFont = useCallback((family: string) => {
     previewGoogleFont(googleFontsSelected.family);
   }, [googleFontsSelected?.family, previewGoogleFont]);
 
+  // Pre-load fonts for all visible list items so they render in their own typeface immediately
+  useEffect(() => {
+    if (!fontManagerOpen || googleFontsAll.length === 0) return;
+    const visible = googleFontsAll
+      .filter(f => !googleFontsQuery.trim() || (f.family || '').toLowerCase().includes(googleFontsQuery.trim().toLowerCase()))
+      .slice(0, 300);
+    // Batch in small chunks to avoid flooding the network
+    let i = 0;
+    const step = () => {
+      const chunk = visible.slice(i, i + 20);
+      chunk.forEach(f => previewGoogleFont(f.family));
+      i += 20;
+      if (i < visible.length) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, [fontManagerOpen, googleFontsAll, googleFontsQuery, previewGoogleFont]);
+
   const getGroupByMember = useCallback((id: string) => {
     return config.layout.groups?.find(g => g.memberIds.includes(id)) || null;
   }, [config.layout.groups]);
@@ -655,14 +672,28 @@ const previewGoogleFont = useCallback((family: string) => {
   const [dontShowAgain, setDontShowAgain] = useState(false);
   const [showConstructionModal, setShowConstructionModal] = useState(false);
 
+  // Project identity & recent projects
+  const [projectId, setProjectId] = useState<string>(() => localStorage.getItem('ldd_current_project_id') || `proj_${Date.now()}`);
+  const [projectName, setProjectName] = useState<string>(() => localStorage.getItem('ldd_current_project_name') || 'Untitled Project');
+  const [recentProjects, setRecentProjects] = useState<{id: string; name: string; config: PDFConfig; savedAt: number}[]>(() => {
+    try { return JSON.parse(localStorage.getItem('ldd_recent_projects') || '[]'); } catch { return []; }
+  });
+  const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+  const [newProjectNameInput, setNewProjectNameInput] = useState('');
+  const [showGetStarted, setShowGetStarted] = useState(false);
+  const [getStartedDontShow, setGetStartedDontShow] = useState(false);
+  const [toolbarMode, setToolbarMode] = useState<'auto' | 'show' | 'hide'>(() => { const s = localStorage.getItem('ldd_toolbar_mode'); return s === 'hide' || s === 'auto' ? s as any : 'show'; });
+  const [showToolbarSettings, setShowToolbarSettings] = useState(false);
+
 // Tips panel (docked on the right side of the editor viewport)
 const TIPS_OPEN_KEY = 'ldd_pdfgen_tips_panel_open_v1';
 const [tipsOpen, setTipsOpen] = useState<boolean>(() => {
   const v = localStorage.getItem(TIPS_OPEN_KEY);
   // Open by default (only respect stored value if present)
-  return v == null ? true : v === '1';
+  return v == null ? false : v === '1';
 });
 const [tipsSection, setTipsSection] = useState<EditorTab | 'CANVAS'>(EditorTab.SOURCE);
+const [layersPanelOpen, setLayersPanelOpen] = useState(true);
   const [isSidebarMinimized, setIsSidebarMinimized] = useState(false);
   const [contextMenu, setContextMenu] = useState<null | {
     id: string;
@@ -677,6 +708,9 @@ const [tipsSection, setTipsSection] = useState<EditorTab | 'CANVAS'>(EditorTab.S
   const [alignSubmenuOpen, setAlignSubmenuOpen] = useState(false);
   const [clipboard, setClipboard] = useState<any>(null);
   const [isExtracting, setIsExtracting] = useState(false);
+  const [extractToast, setExtractToast] = useState(false);
+  const [linkNotDetected, setLinkNotDetected] = useState(false);
+  const [detectedNonMdUrl, setDetectedNonMdUrl] = useState<string | null>(null);
   const [savedPresets, setSavedPresets] = useState<{name: string, config: PDFConfig}[]>(() => {
   try {
     return JSON.parse(localStorage.getItem('lavender_presets') || '[]');
@@ -765,7 +799,12 @@ useEffect(() => {
 
     const skipRestore = localStorage.getItem('lavender_restore_hidden');
     const savedWork = localStorage.getItem('lavender_autosave');
-    if (savedWork && !skipRestore) setRestoreModal(true);
+    if (savedWork && !skipRestore) {
+      setRestoreModal(true);
+    } else if (!savedWork && localStorage.getItem('ldd_get_started_hidden') !== '1') {
+      // Brand new user — show get started after a short delay so onboarding shows first
+      setTimeout(() => setShowGetStarted(true), 300);
+    }
   }, []);
 
   // Ensure text blocks don't load with tiny boxes that clip content.
@@ -782,15 +821,25 @@ useEffect(() => {
     }
   }, [config.socials.facebook, config.socials.instagram, config.socials.etsy, config.socials.website, config.socials.shopify, config.socials.woo]);
   useEffect(() => {
-    // If the "Resume Last Work" modal is open and the user hasn't chosen yet,
+    // If the "Open Recent" modal is open and the user hasn't chosen yet,
     // do NOT autosave the blank INITIAL_CONFIG over their real saved work.
     if (restoreModal && !restoreChoiceMade) return;
 
     const timer = setTimeout(() => {
       localStorage.setItem('lavender_autosave', JSON.stringify(config));
+      // Also upsert into recent projects list (keep last 10)
+      const snapshot = { id: projectId, name: projectName, config: JSON.parse(JSON.stringify(config)), savedAt: Date.now() };
+      setRecentProjects(prev => {
+        const filtered = prev.filter(p => p.id !== projectId);
+        const next = [snapshot, ...filtered].slice(0, 10);
+        try { localStorage.setItem('ldd_recent_projects', JSON.stringify(next)); } catch {}
+        return next;
+      });
+      try { localStorage.setItem('ldd_current_project_id', projectId); } catch {}
+      try { localStorage.setItem('ldd_current_project_name', projectName); } catch {}
     }, 2000);
     return () => clearTimeout(timer);
-  }, [config, restoreModal, restoreChoiceMade]);
+  }, [config, restoreModal, restoreChoiceMade, projectId, projectName]);
 
   // Keep theme and auto-socials visibility in sync
   useEffect(() => {
@@ -807,8 +856,10 @@ useEffect(() => {
     const center = () => {
       const vw = el.clientWidth;
       const vh = el.clientHeight;
+      // pt-16 already shifts content down 64px — just center within the remaining usable height.
+      const usableH = vh - 64;
       const x = (vw - CANVAS_WIDTH * zoom) / 2;
-      const y = (vh - CANVAS_HEIGHT * zoom) / 2;
+      const y = (usableH - CANVAS_HEIGHT * zoom) / 2;
       setOffset({ x, y });
     };
 
@@ -883,6 +934,16 @@ useEffect(() => {
     if (!file) return;
 
     if (type === 'project') {
+      if (!file.name.toLowerCase().endsWith('.json')) {
+        if (file.name.toLowerCase().endsWith('.pdf')) {
+          e.target.value = '';
+          alert('Open Project only accepts .json project files.\n\nTo auto-extract a download link, go to the Source tab and upload your original MD Download.pdf or any PDF containing a MyDesigns download link. Note: other download links will not auto-extract.');
+        } else {
+          alert(`"${file.name}" is not a valid project file.\n\nOpen Project only accepts .json files saved with Save Project.`);
+          e.target.value = '';
+        }
+        return;
+      }
       const reader = new FileReader();
       reader.onload = (event) => {
         try {
@@ -892,7 +953,7 @@ useEffect(() => {
           setHistory([normalized]);
           setHistoryIndex(0);
         } catch (err) {
-          alert('Failed to load project file. Invalid format.');
+          alert('Failed to load project file. The file may be corrupted or not a valid project file.');
         }
       };
       reader.readAsText(file);
@@ -901,6 +962,8 @@ useEffect(() => {
 
     if (type === 'source') {
       setIsExtracting(true);
+      setLinkNotDetected(false);
+      setDetectedNonMdUrl(null);
       updateConfig('source.fileName', file.name);
       try {
         const arrayBuffer = await file.arrayBuffer();
@@ -934,6 +997,21 @@ useEffect(() => {
             }
           }
         }
+
+        if (extractedUrl) {
+          const isMdLink = /mydesigns\.io|download\.mydesigns/i.test(extractedUrl);
+          if (isMdLink) {
+            // MD link — set on canvas and show success toast
+            setExtractToast(true);
+            setTimeout(() => setExtractToast(false), 3000);
+          } else {
+            // Non-MD link detected — don't auto-apply, ask user to add manually
+            setDetectedNonMdUrl(extractedUrl);
+            setLinkNotDetected(true);
+          }
+        } else {
+          setLinkNotDetected(true);
+        }
       } catch (err) {
         console.error("PDF operation failed", err);
       } finally {
@@ -961,6 +1039,35 @@ useEffect(() => {
       }
     };
     reader.readAsDataURL(file);
+  };
+
+  // Open a recent project from the list
+  const handleOpenRecent = (proj: {id: string; name: string; config: PDFConfig; savedAt: number}) => {
+    setConfig(normalizeLoadedConfig(proj.config));
+    setHistory([proj.config]);
+    setHistoryIndex(0);
+    setProjectId(proj.id);
+    setProjectName(proj.name);
+    setRestoreChoiceMade(true);
+    setRestoreModal(false);
+  };
+
+  // Start a brand-new project (called after user confirms name)
+  const confirmNewProject = (name: string) => {
+    const id = `proj_${Date.now()}`;
+    setProjectId(id);
+    setProjectName(name || 'Untitled Project');
+    setConfig(INITIAL_CONFIG as unknown as PDFConfig);
+    setHistory([INITIAL_CONFIG as unknown as PDFConfig]);
+    setHistoryIndex(0);
+    setRestoreChoiceMade(true);
+    setRestoreModal(false);
+    setShowNewProjectModal(false);
+    setNewProjectNameInput('');
+    // Show get-started prompt unless user has opted out
+    if (localStorage.getItem('ldd_get_started_hidden') !== '1') {
+      setShowGetStarted(true);
+    }
   };
 
   const handleSaveProject = () => {
@@ -1689,11 +1796,30 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
   `;
   document.body.appendChild(clone);
 
+  // Inject custom font @font-face rules into the clone so html2canvas can render them correctly.
+  try {
+    const storedFonts: {name: string; dataUrl: string}[] = JSON.parse(localStorage.getItem('ldd_custom_fonts_data_v1') || '[]');
+    if (storedFonts.length > 0) {
+      const styleEl = document.createElement('style');
+      styleEl.textContent = storedFonts.map(f => {
+        const ext = (f.dataUrl.split(';')[0] || '').replace('data:font/', '').replace('data:application/font-', '') || 'truetype';
+        const format = ext === 'woff2' ? 'woff2' : ext === 'woff' ? 'woff' : ext === 'otf' ? 'opentype' : 'truetype';
+        return `@font-face { font-family: '${f.name}'; src: url('${f.dataUrl}') format('${format}'); font-weight: normal; font-style: normal; }`;
+      }).join('\n');
+      clone.prepend(styleEl);
+      // Pre-load each custom font at all weights before capture
+      await Promise.allSettled(storedFonts.flatMap(f => [
+        document.fonts.load(`normal 16px "${f.name}"`, 'AaBbCc'),
+        document.fonts.load(`bold 16px "${f.name}"`, 'AaBbCc'),
+      ]));
+    }
+  } catch {}
+
   // Replace external image srcs with data URLs inside the clone (avoids canvas taint).
   await convertExternalImagesToDataURLs(clone);
 
-  // Give the browser a frame to paint the clone before capture.
-  await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+  // Give the browser extra frames to paint the clone — custom fonts need more time to settle.
+  await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
 
   const baseOpts: any = {
     useCORS: true,
@@ -2151,7 +2277,7 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
             <div className="grid grid-cols-2 gap-2 mb-4">
               {[
                 { id: 'upload', icon: Upload, label: 'Upload' },
-                { id: 'link', icon: LinkIcon2, label: 'Manual' },
+                { id: 'link', icon: LinkIcon2, label: 'Manual Link' },
                 { id: 'drive', icon: HardDrive, label: 'G-Drive' },
                 { id: 'one', icon: Cloud, label: 'OneDrive' },
                 { id: 'shopify', icon: ShopifyIcon, label: 'Shopify' }
@@ -2183,14 +2309,72 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
                      <p className="mt-1 text-[11px] font-semibold text-slate-700 leading-snug">
                        We’ll auto add it to your download button — or add your download link manually.
                      </p>
+                     <p className="mt-2 text-[10px] text-slate-400 italic leading-snug">
+                       Only MyDesigns download links will auto-extract. Other PDF links will not be detected.
+                     </p>
                    </div>
-                 </>
+                   {linkNotDetected && (() => {
+                     const url = detectedNonMdUrl || '';
+                     const isDrive = /drive\.google\.com/i.test(url);
+                     const isOneDrive = /onedrive\.live\.com|1drv\.ms/i.test(url);
+                     const isShopify = /myshopify\.com|shopify\.com/i.test(url);
+                     const isWoo = /woocommerce|\/product\//i.test(url);
+                     const hasDetected = !!url;
+
+                     const modeLabel = isDrive ? 'G-Drive' : isOneDrive ? 'OneDrive' : isShopify ? 'Shopify' : isWoo ? 'WooCommerce' : 'Manual Link';
+                     const modeId = isDrive ? 'drive' : isOneDrive ? 'one' : isShopify ? 'shopify' : isWoo ? 'woo' : 'link';
+
+                     return (
+                       <div className="mt-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl space-y-3">
+                         <div className="flex gap-2 items-start">
+                           <Info size={13} className="text-amber-600 shrink-0 mt-0.5" />
+                           <p className="text-[10px] font-black text-amber-800 leading-snug">
+                             {hasDetected
+                               ? `A ${modeLabel} link was detected but must be added manually — only MyDesigns links auto-apply.`
+                               : 'No download link detected in this PDF. Please paste your link manually.'}
+                           </p>
+                         </div>
+                         {hasDetected && (
+                           <div className="text-[9px] text-amber-700 font-bold truncate bg-amber-100 rounded-lg px-2 py-1">{url}</div>
+                         )}
+                         <div className="flex gap-2 flex-wrap">
+                           {hasDetected && (
+                             <button
+                               onClick={() => {
+                                 updateConfig('source.mode', modeId);
+                                 updateConfig('source.link', url);
+                                 setLinkNotDetected(false);
+                                 setDetectedNonMdUrl(null);
+                               }}
+                               className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 text-white rounded-xl font-black text-[10px] hover:bg-indigo-700 transition-all"
+                             >
+                               <LinkIcon size={11} /> Add to {modeLabel}
+                             </button>
+                           )}
+                           <button
+                             onClick={() => {
+                               updateConfig('source.mode', 'link');
+                               if (url) updateConfig('source.link', url);
+                               setLinkNotDetected(false);
+                               setDetectedNonMdUrl(null);
+                             }}
+                             className="flex items-center gap-1.5 px-3 py-2 bg-white border border-amber-300 text-amber-800 rounded-xl font-black text-[10px] hover:bg-amber-100 transition-all"
+                           >
+                             <LinkIcon size={11} /> {hasDetected && modeId !== 'link' ? 'Add to Manual Link' : 'Enter Manually'}
+                           </button>
+                         </div>
+                       </div>
+                     );
+                   })()}
+                                  </>
                ) : (
                  <div className="space-y-3">
-                   <label className="text-[10px] font-black text-slate-900 uppercase">URL for {config.source.mode}</label>
+                   <label className="text-[10px] font-black text-slate-900 uppercase">
+                     {config.source.mode === 'link' ? 'Manual Link' : config.source.mode === 'drive' ? 'Google Drive Link' : config.source.mode === 'one' ? 'OneDrive Link' : config.source.mode === 'shopify' ? 'Shopify Link' : config.source.mode === 'woo' ? 'WooCommerce Link' : 'Download Link'}
+                   </label>
                    <div className="flex gap-2 p-3 bg-white border-2 border-slate-100 rounded-2xl">
-                     <LinkIcon size={18} className="text-slate-400" />
-                     <input className="flex-1 bg-transparent text-xs font-black outline-none" value={config.source.link} onChange={e => updateConfig('source.link', e.target.value)} placeholder="https://..." />
+                     <LinkIcon size={18} className="text-slate-400 shrink-0" />
+                     <input className="flex-1 bg-transparent text-xs font-black outline-none" value={config.source.link} onChange={e => updateConfig('source.link', e.target.value)} placeholder="Paste your link here..." />
                    </div>
                  </div>
                )}
@@ -2229,24 +2413,9 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
                   <ImageIcon size={24} /> <span className="text-[10px] font-black uppercase text-center">Add Image Layer</span>
                 </button>
               </div>
-              <div className="space-y-2">
-                {/* Standard Visibility Toggles */}
-                <div key="watermark" onClick={() => setSelectedId('watermark')} className={`group flex items-center justify-between p-3 rounded-2xl border-2 transition-all cursor-pointer ${selectedId === 'watermark' ? 'border-indigo-600 bg-indigo-50' : 'border-slate-50'}`}>
-                  <span className="text-xs font-black text-slate-700 capitalize">Watermark</span>
-                  <button onClick={(e) => { e.stopPropagation(); updateConfig('visibility.watermark', !config.visibility.watermark); }} className={`p-2 rounded-xl ${config.visibility.watermark ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-500'}`}>{config.visibility.watermark ? <Eye size={14}/> : <EyeOff size={14}/>}</button>
-                </div>
-                {Object.keys(config.layout.blocks).map(id => id !== 'socials' && (
-                  <div key={id} onClick={() => setSelectedId(id)} className={`group flex items-center justify-between p-3 rounded-2xl border-2 transition-all cursor-pointer ${selectedId === id ? 'border-indigo-600 bg-indigo-50' : 'border-slate-50'}`}>
-                    <span className="text-xs font-black text-slate-700 capitalize">{id}</span>
-                    <button onClick={(e) => { e.stopPropagation(); updateConfig(`visibility.${id}`, !config.visibility[id]); }} className={`p-2 rounded-xl ${config.visibility[id] ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-500'}`}>{config.visibility[id] ? <Eye size={14}/> : <EyeOff size={14}/>}</button>
-                  </div>
-                ))}
-                {config.layout.extraLayers.map(l => (
-                  <div key={l.id} onClick={() => setSelectedId(l.id)} className={`group flex items-center justify-between p-3 rounded-2xl border-2 transition-all cursor-pointer ${selectedId === l.id ? 'border-indigo-600 bg-indigo-50' : 'border-slate-50'}`}>
-                    <span className="text-xs font-black text-slate-700 truncate w-32">{(l.type === 'text' ? l.content : 'Custom Image')}</span>
-                    <button onClick={(e) => { e.stopPropagation(); updateConfig('layout.extraLayers', config.layout.extraLayers.filter(x => x.id !== l.id)); }} className="p-2 bg-red-100 text-red-600 rounded-xl opacity-0 group-hover:opacity-100 transition-all hover:bg-red-200"><Trash2 size={14}/></button>
-                  </div>
-                ))}
+              <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-start gap-2">
+                <Layers size={13} className="text-indigo-500 mt-0.5 shrink-0" />
+                <p className="text-[10px] font-black text-indigo-700 leading-snug">Layer visibility is controlled from the <span className="underline">Layers panel</span> floating on the canvas — click the Layers button on the canvas to open it.</p>
               </div>
               <input type="file" ref={extraImgInputRef} hidden accept="image/*" onChange={e => handleFileUpload(e, 'extra')} />
             </div>
@@ -2266,6 +2435,24 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
                  </div>
                </div>
              ))}
+             <div className="p-4 bg-white border-2 border-slate-100 rounded-2xl space-y-2">
+               <div className="flex items-center justify-between">
+                 <label className="text-[10px] font-black text-slate-900 uppercase">Icon Size</label>
+                 <span className="text-[11px] font-black text-indigo-600">{config.fonts.blocks.socials.size}px</span>
+               </div>
+               <input
+                 type="range"
+                 min={10}
+                 max={48}
+                 step={1}
+                 value={config.fonts.blocks.socials.size}
+                 onChange={e => updateConfig('fonts.blocks.socials.size', Number(e.target.value))}
+                 className="w-full accent-indigo-600"
+               />
+               <div className="flex justify-between text-[9px] font-bold text-slate-400">
+                 <span>Small</span><span>Large</span>
+               </div>
+             </div>
           </div>
         );
       case EditorTab.PROMO:
@@ -2361,18 +2548,67 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
 
       case EditorTab.PRESETS:
         return (
-          <div className="space-y-6">
-            <h3 className="text-sm font-black text-slate-900 uppercase">Project File</h3>
-            <div className="grid grid-cols-2 gap-3">
-              <button onClick={handleSaveProject} className="flex flex-col items-center gap-2 p-4 bg-white border-2 border-slate-100 rounded-2xl hover:border-indigo-600 transition-all">
-                <FileJson size={24} className="text-indigo-600" /> <span className="text-[10px] font-black uppercase">Save .json</span>
+          <div className="space-y-4">
+
+            {/* Working on */}
+            <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl">
+              <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest mb-1">Currently Working On</p>
+              <input
+                type="text"
+                value={projectName}
+                onChange={e => setProjectName(e.target.value)}
+                placeholder="Untitled Project"
+                className="w-full bg-transparent text-sm font-black text-indigo-900 outline-none placeholder-indigo-300"
+              />
+              <p className="text-[9px] text-indigo-300 mt-1">✓ Auto-saving</p>
+            </div>
+
+            {/* 3 simple actions */}
+            <div className="grid grid-cols-1 gap-2">
+              <button
+                onClick={() => { setRestoreChoiceMade(false); setRestoreModal(true); }}
+                className="w-full py-3.5 bg-white border-2 border-slate-100 rounded-2xl font-black text-sm text-slate-900 hover:border-indigo-400 hover:text-indigo-700 transition-all flex items-center gap-3 px-4"
+              >
+                <RotateCw size={18} className="text-indigo-500 shrink-0" />
+                <div className="text-left">
+                  <div className="text-xs font-black">Switch Project</div>
+                  <div className="text-[9px] font-medium text-slate-400">All auto-saved — pick any recent project</div>
+                </div>
               </button>
-              <button onClick={() => projectInputRef.current?.click()} className="flex flex-col items-center gap-2 p-4 bg-white border-2 border-slate-100 rounded-2xl hover:border-indigo-600 transition-all">
-                <FolderOpen size={24} className="text-indigo-600" /> <span className="text-[10px] font-black uppercase">Load .json</span>
-                <input type="file" ref={projectInputRef} hidden accept=".json" onChange={e => handleFileUpload(e, 'project')} />
+              <button
+                onClick={() => { setShowNewProjectModal(true); setNewProjectNameInput(''); }}
+                className="w-full py-3.5 bg-white border-2 border-slate-100 rounded-2xl font-black text-sm text-slate-900 hover:border-indigo-400 hover:text-indigo-700 transition-all flex items-center gap-3 px-4"
+              >
+                <Plus size={18} className="text-indigo-500 shrink-0" />
+                <div className="text-left">
+                  <div className="text-xs font-black">New Project</div>
+                  <div className="text-[9px] font-medium text-slate-400">Start from a blank canvas</div>
+                </div>
               </button>
             </div>
-            <button onClick={handleSavePreset} className="w-full py-3 bg-indigo-50 text-indigo-700 rounded-xl font-black text-[10px] uppercase hover:bg-indigo-100 transition-all flex items-center justify-center gap-2 mb-4"><Plus size={14} /> Save current as preset</button>
+
+            <div className="h-px bg-slate-100" />
+
+            {/* Transfer between devices */}
+            <div>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Transfer to Another Device</p>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={handleSaveProject} className="flex flex-col items-center gap-2 p-4 bg-white border-2 border-slate-100 rounded-2xl hover:border-indigo-400 transition-all">
+                  <FileJson size={22} className="text-indigo-500" />
+                  <span className="text-[10px] font-black text-slate-700">Save to File</span>
+                </button>
+                <button onClick={() => projectInputRef.current?.click()} className="flex flex-col items-center gap-2 p-4 bg-white border-2 border-slate-100 rounded-2xl hover:border-indigo-400 transition-all">
+                  <FolderOpen size={22} className="text-indigo-500" />
+                  <span className="text-[10px] font-black text-slate-700">Load</span>
+                  <input type="file" ref={projectInputRef} hidden accept=".json" onChange={e => handleFileUpload(e, 'project')} />
+                </button>
+              </div>
+              <p className="text-[9px] text-slate-400 text-center mt-2">Saves your design settings only — not the PDF.</p>
+            </div>
+
+            <div className="h-px bg-slate-100" />
+
+            <button onClick={handleSavePreset} className="w-full py-3 bg-slate-50 text-slate-600 rounded-xl font-black text-[10px] uppercase hover:bg-slate-100 transition-all flex items-center justify-center gap-2"><Plus size={14} /> Save as Preset</button>
             <div className="space-y-2">
               {savedPresets.map((preset, idx) => (
                 <div key={idx} className="flex items-center justify-between p-3 bg-white border-2 border-slate-50 rounded-xl group hover:border-indigo-100 transition-all">
@@ -2587,7 +2823,32 @@ const renderTipsPanel = () => {
     <div className="h-screen w-screen flex bg-slate-100 font-sans transition-colors overflow-hidden">
       <input ref={fontUploadRef} type="file" accept=".ttf,.otf,.woff,.woff2" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUploadFont(f); e.currentTarget.value = ''; }} />
       {/* CONTEXTUAL TOOLBAR */}
-      <div className={`fixed top-0 left-0 right-0 h-16 bg-white/95 backdrop-blur-2xl border-b border-slate-200 z-[100] flex items-center px-8 gap-6 shadow-xl no-print transition-transform duration-300 ${selectedId ? 'translate-y-0' : '-translate-y-full'}`}>
+      {/* Hidden toolbar indicator — shows a pull-down arrow when toolbar is not visible */}
+      {(toolbarMode === 'hide' || (toolbarMode === 'auto' && !selectedId)) && (
+        <div
+          className={`fixed top-0 z-[101] flex items-center justify-center no-print group ${isSidebarMinimized ? 'left-24' : 'left-[31rem]'} right-0`}
+        >
+          <div className="relative flex flex-col items-center">
+            <button
+              onClick={() => { setToolbarMode('auto'); localStorage.setItem('ldd_toolbar_mode', 'auto'); }}
+              className="flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200 rounded-b-xl shadow-sm text-[10px] font-black text-slate-400 hover:text-indigo-600 hover:border-indigo-300 transition-all"
+            >
+              <ChevronDown size={13} /> Formatting Bar
+            </button>
+            <div className="absolute top-full mt-1 bg-slate-900 text-white text-[10px] font-black px-3 py-2 rounded-xl shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+              Select an element to show · Change in ⚙ settings below
+            </div>
+          </div>
+        </div>
+      )}
+      <div className={`fixed top-0 right-0 h-16 bg-white/95 backdrop-blur-2xl border-b border-slate-200 z-[100] flex items-center px-8 gap-6 shadow-xl no-print transition-transform duration-300 ${toolbarMode === 'hide' ? '-translate-y-full' : toolbarMode === 'show' ? 'translate-y-0' : (selectedId ? 'translate-y-0' : '-translate-y-full')} ${isSidebarMinimized ? 'left-24' : 'left-[31rem]'}`}>
+        {!activeElementProps && toolbarMode === 'show' && (
+          <div className="flex items-center gap-2 w-full text-slate-400">
+            <MousePointer size={14} className="text-indigo-300" />
+            <span className="text-[11px] font-black">Select an element on the canvas to see formatting options</span>
+            <button onClick={() => { setToolbarMode('auto'); localStorage.setItem('ldd_toolbar_mode', 'auto'); }} className="ml-auto text-[10px] font-black text-slate-300 hover:text-slate-500 transition-colors">Auto-hide</button>
+          </div>
+        )}
         {activeElementProps && (
           <div className="flex items-center gap-6 w-full animate-in fade-in slide-in-from-top-4 duration-300">
             <div className="flex items-center gap-3 pr-6 border-r border-slate-200">
@@ -2703,22 +2964,33 @@ const renderTipsPanel = () => {
 
       {showOnboarding && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-lg p-6">
-          <div className="bg-white rounded-[40px] p-12 max-w-xl shadow-2xl relative text-center border-t-8 border-indigo-600">
-            <h2 className="text-3xl font-black text-slate-900 mb-2 tracking-tight">LavenderDragonDesign's MD PDF Generator</h2>
-            <p className="text-indigo-600 font-bold mb-6 italic">Beta build - v1.4</p>
-            <div className="bg-slate-50 p-6 rounded-3xl text-left border border-slate-200 mb-8">
-              <ul className="text-xs text-slate-600 space-y-3 font-medium">
-                <li className="flex items-start gap-2">• <span className="flex-1">Auto-Extract links from MD Download PDFs.</span></li>
-                <li className="flex items-start gap-2">• <span className="flex-1">Fixed Layer Draggability (Copy/Paste Logic).</span></li>
-                <li className="flex items-start gap-2">• <span className="flex-1">Branding Watermark toggle added to layers.</span></li>
+          <div className="bg-white rounded-[40px] p-10 max-w-lg w-full shadow-2xl relative text-center border-t-8 border-indigo-600">
+            <button
+              onClick={() => { if (dontShowAgain) localStorage.setItem('lavender_welcome_hidden', 'true'); setShowOnboarding(false); }}
+              className="absolute top-5 right-5 p-2 rounded-xl hover:bg-slate-100 text-slate-400 transition-all"
+            ><X size={18} /></button>
+            <div className="flex flex-col items-center gap-3 mb-5">
+              <img src="/icon128.png" alt="LavenderDragonDesign" className="w-16 h-16 rounded-2xl object-cover ring-2 ring-indigo-100" />
+              <div>
+                <h2 className="text-2xl font-black text-slate-900 tracking-tight">LavenderDragonDesign</h2>
+                <p className="text-sm font-bold text-indigo-500">MD PDF Generator — v1.5</p>
+              </div>
+            </div>
+            <div className="bg-slate-50 p-5 rounded-3xl text-left border border-slate-100 mb-6">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">What's New</p>
+              <ul className="text-xs text-slate-700 space-y-2.5 font-medium">
+                <li className="flex items-start gap-2"><Check size={13} className="text-indigo-500 mt-0.5 shrink-0" /><span>Recent Projects &amp; Auto-save — pick up where you left off, any time.</span></li>
+                <li className="flex items-start gap-2"><Check size={13} className="text-indigo-500 mt-0.5 shrink-0" /><span>Formatting toolbar — auto-hide, always show, or always hide via ⚙ settings.</span></li>
+                <li className="flex items-start gap-2"><Check size={13} className="text-indigo-500 mt-0.5 shrink-0" /><span>Social icon size control — resize icons directly from the Social tab.</span></li>
+                <li className="flex items-start gap-2"><Check size={13} className="text-indigo-500 mt-0.5 shrink-0" /><span>Live Google Fonts preview — see every font before you apply it.</span></li>
               </ul>
             </div>
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-3">
               <label className="flex items-center justify-center gap-3 cursor-pointer group">
                 <input type="checkbox" checked={dontShowAgain} onChange={e => setDontShowAgain(e.target.checked)} className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
-                <span className="text-sm font-black text-slate-600 group-hover:text-indigo-600 transition-colors">Don't show this again</span>
+                <span className="text-sm font-black text-slate-500 group-hover:text-indigo-600 transition-colors">Don't show this again</span>
               </label>
-              <button onClick={() => { if (dontShowAgain) localStorage.setItem('lavender_welcome_hidden', 'true'); setShowOnboarding(false); }} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-lg hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200">Start Designing</button>
+              <button onClick={() => { if (dontShowAgain) localStorage.setItem('lavender_welcome_hidden', 'true'); setShowOnboarding(false); }} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-lg hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200">Let's Go</button>
             </div>
           </div>
         </div>
@@ -2726,22 +2998,149 @@ const renderTipsPanel = () => {
 
       {restoreModal && !showOnboarding && (
         <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/50 backdrop-blur-sm p-6">
-          <div className="bg-white rounded-[30px] p-8 max-w-sm w-full shadow-2xl text-center">
-             <div className="w-16 h-16 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-4"><RotateCw className="text-indigo-600" size={32} /></div>
-             <h3 className="text-xl font-black text-slate-900 mb-2">Resume Last Work?</h3>
-             <label className="mt-4 mb-2 flex items-center justify-center gap-3 cursor-pointer group">
-               <input type="checkbox" checked={restoreDontAsk} onChange={e => setRestoreDontAsk(e.target.checked)} className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
-               <span className="text-xs font-black text-slate-600 group-hover:text-indigo-600 transition-colors">Don't ask again</span>
-             </label>
+          <div className="bg-white rounded-[30px] p-8 max-w-md w-full shadow-2xl">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-xl font-black text-slate-900">Open Recent</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Pick a project or start fresh</p>
+              </div>
+              <button onClick={() => { setRestoreChoiceMade(true); setRestoreModal(false); }} className="p-2 rounded-xl hover:bg-slate-100 text-slate-400"><X size={18} /></button>
+            </div>
 
-             <div className="flex gap-3 mt-6">
-               <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); localStorage.removeItem('lavender_autosave'); setRestoreChoiceMade(true); setRestoreModal(false); }} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs hover:bg-slate-200">New Project</button>
-               <button onClick={() => { if (restoreDontAsk) localStorage.setItem('lavender_restore_hidden','true'); const data = localStorage.getItem('lavender_autosave'); if (data) setConfig(normalizeLoadedConfig(JSON.parse(data))); setRestoreChoiceMade(true); setRestoreModal(false); }} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-100">Resume</button>
-             </div>
+            {recentProjects.length > 0 ? (
+              <div className="space-y-2 max-h-64 overflow-auto mb-6">
+                {recentProjects.map(proj => (
+                  <button
+                    key={proj.id}
+                    onClick={() => handleOpenRecent(proj)}
+                    className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-indigo-50 border-2 border-transparent hover:border-indigo-200 rounded-2xl transition-all text-left group"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-slate-900 truncate group-hover:text-indigo-700">{proj.name}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">{new Date(proj.savedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                    </div>
+                    <RotateCw size={14} className="text-slate-300 group-hover:text-indigo-500 shrink-0 ml-3" />
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8 text-slate-400 text-xs mb-6">No recent projects yet.</div>
+            )}
+
+            <button
+              onClick={() => { setShowNewProjectModal(true); setNewProjectNameInput(''); }}
+              className="w-full py-3 bg-indigo-600 text-white rounded-2xl font-black text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
+            >
+              <Plus size={16} /> New Project
+            </button>
           </div>
         </div>
       )}
 
+      {/* Get Started modal */}
+      {showGetStarted && (
+        <div className="fixed inset-0 z-[225] flex items-center justify-center bg-black/50 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] shadow-2xl border border-slate-100 p-8 max-w-sm w-full text-center relative">
+            <button
+              onClick={() => { if (getStartedDontShow) localStorage.setItem('ldd_get_started_hidden', '1'); setShowGetStarted(false); }}
+              className="absolute top-4 right-4 p-2 rounded-xl hover:bg-slate-100 text-slate-400 transition-all"
+            ><X size={16} /></button>
+            <div className="w-14 h-14 bg-indigo-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <Upload className="text-indigo-600" size={28} />
+            </div>
+            <h3 className="text-lg font-black text-slate-900 mb-1">Let's Get Started</h3>
+            <p className="text-[11px] text-slate-500 mb-6 leading-relaxed">
+              Upload your <span className="font-black text-slate-700">MyDesigns Download.pdf</span> to auto-extract your download link, or choose another source below.
+            </p>
+            <div className="space-y-3">
+              <button
+                onClick={() => { setShowGetStarted(false); setActiveTab(EditorTab.SOURCE); setIsSidebarMinimized(false); setTimeout(() => sourceInputRef.current?.click(), 150); }}
+                className="w-full py-3.5 bg-indigo-600 text-white rounded-2xl font-black text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
+              >
+                <Upload size={15} /> Upload MD Download.pdf
+              </button>
+              <button
+                onClick={() => { setShowGetStarted(false); setActiveTab(EditorTab.SOURCE); setIsSidebarMinimized(false); updateConfig('source.mode', 'link'); }}
+                className="w-full py-3 bg-slate-100 text-slate-700 rounded-2xl font-black text-sm hover:bg-slate-200 transition-all flex items-center justify-center gap-2"
+              >
+                <LinkIcon size={14} /> Enter Link Manually
+              </button>
+              <div className="flex gap-2">
+                {[
+                  { id: 'drive', label: 'G-Drive', icon: HardDrive },
+                  { id: 'one', label: 'OneDrive', icon: Cloud },
+                  { id: 'shopify', label: 'Shopify', icon: ShopifyIcon },
+                ].map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    onClick={() => { setShowGetStarted(false); setActiveTab(EditorTab.SOURCE); setIsSidebarMinimized(false); updateConfig('source.mode', id); }}
+                    className="flex-1 py-2.5 bg-slate-50 border border-slate-200 text-slate-600 rounded-xl font-black text-[10px] hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-700 transition-all flex flex-col items-center gap-1"
+                  >
+                    <Icon size={13} />{label}
+                  </button>
+                ))}
+              </div>
+              <div className="pt-2 flex items-center justify-center gap-2">
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={getStartedDontShow}
+                    onChange={e => setGetStartedDontShow(e.target.checked)}
+                    className="w-4 h-4 rounded accent-indigo-600"
+                  />
+                  <span className="text-[10px] font-black text-slate-400 group-hover:text-slate-600 transition-colors">Don't show this again</span>
+                </label>
+              </div>
+              <button
+                onClick={() => { if (getStartedDontShow) localStorage.setItem('ldd_get_started_hidden', '1'); setShowGetStarted(false); }}
+                className="w-full py-2 text-slate-400 font-black text-[10px] hover:text-slate-600 transition-colors"
+              >
+                Skip for now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Project name prompt */}
+      {showNewProjectModal && (
+        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/50 backdrop-blur-sm p-6">
+          <div className="bg-white rounded-[28px] p-8 max-w-sm w-full shadow-2xl">
+            <h3 className="text-lg font-black text-slate-900 mb-1">Name Your Project</h3>
+            <p className="text-xs text-slate-400 mb-5">You can change this any time in the Project tab.</p>
+            <input
+              autoFocus
+              type="text"
+              value={newProjectNameInput}
+              onChange={e => setNewProjectNameInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') confirmNewProject(newProjectNameInput); if (e.key === 'Escape') setShowNewProjectModal(false); }}
+              placeholder="e.g. Summer Sale PDF"
+              className="w-full p-4 bg-slate-50 border-2 border-transparent focus:border-indigo-500 outline-none rounded-2xl text-sm font-black mb-5 transition-all"
+            />
+            <div className="flex gap-3">
+              <button onClick={() => setShowNewProjectModal(false)} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs hover:bg-slate-200">Cancel</button>
+              <button onClick={() => confirmNewProject(newProjectNameInput)} className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs hover:bg-indigo-700 shadow-lg shadow-indigo-100">Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {/* Extract success toast */}
+      {extractToast && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[300] animate-in slide-in-from-bottom-4 duration-300">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-100 p-5 flex items-start gap-4 min-w-[320px] max-w-sm">
+            <div className="w-9 h-9 bg-emerald-50 rounded-xl flex items-center justify-center shrink-0">
+              <Check size={18} className="text-emerald-600" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-black text-slate-900">MyDesigns Download Link Extracted</p>
+              <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">It has been added to your Download Button & QR Code.</p>
+            </div>
+            <button onClick={() => setExtractToast(false)} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 shrink-0"><X size={14} /></button>
+          </div>
+        </div>
+      )}
 
       {/* Export warnings modal */}
       {exportWarnings && (
@@ -2878,7 +3277,7 @@ const renderTipsPanel = () => {
 
 
       {/* ICON SIDEBAR (Fixed Width) */}
-      <div className="no-print w-24 bg-white border-r-2 border-slate-100 flex flex-col items-center py-8 gap-8 z-50 shadow-2xl shrink-0">
+      <div className={`no-print w-24 bg-white border-r-2 border-slate-100 flex flex-col items-center gap-8 z-[110] shadow-2xl shrink-0 transition-all duration-300 ${toolbarMode === 'hide' ? 'py-8' : toolbarMode === 'show' ? 'pt-20 pb-8' : selectedId ? 'pt-20 pb-8' : 'py-8'}`}>
         {[
           { id: EditorTab.SOURCE, icon: Laptop, label: 'Source' },
           { id: EditorTab.ASSETS, icon: Layers, label: 'Layers' },
@@ -2907,8 +3306,8 @@ const renderTipsPanel = () => {
       </div>
 
       {/* MAIN PROPERTY SIDEBAR (Collapsible) */}
-      <div className={`no-print bg-white border-r-2 border-slate-100 flex flex-col z-40 shadow-inner overflow-hidden transition-all duration-300 ease-in-out ${isSidebarMinimized ? 'w-0 border-r-0 opacity-0' : 'w-96 opacity-100'}`}>
-        <header className="p-8 pb-6 border-b-2 border-slate-50 relative flex flex-col items-center">
+      <div className={`no-print bg-white border-r-2 border-slate-100 flex flex-col z-[105] shadow-inner overflow-hidden transition-all duration-300 ease-in-out ${isSidebarMinimized ? 'w-0 border-r-0 opacity-0' : 'w-96 opacity-100'}`}>
+        <header className={`border-b-2 border-slate-50 relative flex flex-col items-center transition-all duration-300 pb-6 px-8 ${toolbarMode === 'hide' ? 'pt-8' : toolbarMode === 'show' ? 'pt-20' : selectedId ? 'pt-20' : 'pt-8'}`}>
           <button 
             onClick={() => setIsSidebarMinimized(true)} 
             className="absolute top-4 right-4 p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
@@ -2922,7 +3321,7 @@ const renderTipsPanel = () => {
             </div>
             <div className="w-full">
               <h2 className="text-xl font-black text-slate-900 leading-tight text-center whitespace-normal break-words">LavenderDragonDesign's PDF Generator</h2>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1 text-center">Branded Download Pages</p>
+              <p className="text-[11px] font-black text-indigo-600 mt-1 text-center truncate max-w-full px-1" title={projectName}>{projectName}</p>
             </div>
           </div>
         </header>
@@ -2946,8 +3345,10 @@ const renderTipsPanel = () => {
         </button>
       )}
 
+      <div className="flex-1 flex flex-col min-w-0">
       <div
         ref={viewportRef}
+        data-viewport="1"
         className={`flex-1 relative bg-slate-100 overflow-hidden pt-16 ${isPanning ? 'cursor-grabbing' : 'cursor-auto'}`}
         onWheel={handleScroll}
         onMouseDown={(e) => {
@@ -2963,6 +3364,7 @@ const renderTipsPanel = () => {
         onContextMenu={(e) => handleContextMenu(e, 'canvas', false)}
       >
         
+
         <div className="no-print absolute top-4 right-4 z-50">
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
@@ -2976,6 +3378,55 @@ const renderTipsPanel = () => {
         <div className="absolute inset-0 dashed-grid pointer-events-none opacity-50" />
         {/* Tips panel lives in the unused right-side space of the editor viewport */}
         {renderTipsPanel()}
+
+        {/* Floating Layers panel — left side of canvas */}
+        <div className="absolute top-20 left-4 z-[79] w-52">
+          {layersPanelOpen ? (
+            <div className="bg-white border-2 border-slate-200 rounded-[20px] shadow-xl overflow-hidden">
+              <div className="px-3 py-2.5 border-b border-slate-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Layers size={13} className="text-indigo-500" />
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-900">Layers</span>
+                </div>
+                <button onClick={() => setLayersPanelOpen(false)} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400"><X size={12} /></button>
+              </div>
+              <div className="p-2 space-y-1 max-h-80 overflow-y-auto custom-scrollbar">
+                <div
+                  onClick={() => setSelectedId('watermark')}
+                  className={`flex items-center justify-between px-2 py-1.5 rounded-xl border transition-all cursor-pointer ${selectedId === 'watermark' ? 'border-indigo-400 bg-indigo-50' : 'border-transparent hover:bg-slate-50'}`}
+                >
+                  <span className="text-[10px] font-black text-slate-600 capitalize">Watermark</span>
+                  <button onClick={(e) => { e.stopPropagation(); updateConfig('visibility.watermark', !config.visibility.watermark); }} className={`p-1 rounded-lg transition-all ${config.visibility.watermark ? 'text-indigo-600' : 'text-slate-300'}`}>
+                    {config.visibility.watermark ? <Eye size={12}/> : <EyeOff size={12}/>}
+                  </button>
+                </div>
+                {Object.keys(config.layout.blocks).map(id => id !== 'socials' && (
+                  <div key={id} onClick={() => setSelectedId(id)} className={`flex items-center justify-between px-2 py-1.5 rounded-xl border transition-all cursor-pointer ${selectedId === id ? 'border-indigo-400 bg-indigo-50' : 'border-transparent hover:bg-slate-50'}`}>
+                    <span className="text-[10px] font-black text-slate-600 capitalize">{id}</span>
+                    <button onClick={(e) => { e.stopPropagation(); updateConfig(`visibility.${id}`, !config.visibility[id]); }} className={`p-1 rounded-lg transition-all ${config.visibility[id] ? 'text-indigo-600' : 'text-slate-300'}`}>
+                      {config.visibility[id] ? <Eye size={12}/> : <EyeOff size={12}/>}
+                    </button>
+                  </div>
+                ))}
+                {config.layout.extraLayers.map(l => (
+                  <div key={l.id} onClick={() => setSelectedId(l.id)} className={`flex items-center justify-between px-2 py-1.5 rounded-xl border transition-all cursor-pointer ${selectedId === l.id ? 'border-indigo-400 bg-indigo-50' : 'border-transparent hover:bg-slate-50'}`}>
+                    <span className="text-[10px] font-black text-slate-600 truncate max-w-[100px]">{l.type === 'text' ? l.content.slice(0,18) : 'Image'}</span>
+                    <button onClick={(e) => { e.stopPropagation(); updateConfig('layout.extraLayers', config.layout.extraLayers.map(x => x.id === l.id ? { ...x, visible: !x.visible } : x)); }} className={`p-1 rounded-lg transition-all ${l.visible ? 'text-indigo-600' : 'text-slate-300'}`}>
+                      {l.visible ? <Eye size={12}/> : <EyeOff size={12}/>}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setLayersPanelOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-white border-2 border-slate-200 text-slate-900 shadow-xl hover:border-indigo-200 hover:text-indigo-600 transition-all text-[10px] font-black uppercase tracking-widest"
+            >
+              <Layers size={13} /> Layers
+            </button>
+          )}
+        </div>
         <div
           id="pdf-canvas"
           ref={canvasRef}
@@ -2998,6 +3449,7 @@ const renderTipsPanel = () => {
           {config.assets.watermark && config.visibility.watermark && (
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center overflow-hidden"><img src={config.assets.watermark} style={{ opacity: config.assets.watermarkOpacity, transform: 'rotate(-45deg) scale(2)' }} className="w-1/2 object-contain" /></div>
           )}
+
           <DraggableBlock id="logo" config={config} updateConfig={updateConfig} visible={!!config.assets.logo && config.visibility.logo} onSelect={selectElement} selectedIds={selectedIds} isSelected={selectedIds.includes('logo')} isPrimary={selectedId === 'logo'} onContextMenu={handleContextMenu} zoom={zoom}><img src={config.assets.logo!} className="w-full h-full object-contain pointer-events-none" /></DraggableBlock>
           
           {/* STANDARD TEXT BLOCKS */}
@@ -3178,17 +3630,56 @@ const renderTipsPanel = () => {
           {snapLines.h.map((y, i) => <div key={`h-${i}`} className="absolute left-0 right-0 border-t-2 border-blue-500/50 z-[100] pointer-events-none" style={{ top: y }} />)}
           {snapLines.v.map((x, i) => <div key={`v-${i}`} className="absolute top-0 bottom-0 border-l-2 border-blue-500/50 z-[100] pointer-events-none" style={{ left: x }} />)}
         </div>
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur-xl border-2 border-slate-200 rounded-[30px] shadow-2xl p-2 flex items-center gap-2 z-[60]">
-           <button onClick={undo} title="Undo (Ctrl+Z)" className="p-3 hover:bg-slate-100 rounded-2xl text-slate-900 transition-all active:scale-90"><Undo2 size={20}/></button>
-           <button onClick={redo} title="Redo (Ctrl+Y)" className="p-3 hover:bg-slate-100 rounded-2xl text-slate-900 transition-all active:scale-90"><Redo2 size={20}/></button>
-           <div className="w-px h-8 bg-slate-200 mx-1"></div>
-           <button onClick={() => handleAction('copy')} title="Copy (Ctrl+C)" className="p-3 hover:bg-slate-100 rounded-2xl text-slate-900 transition-all active:scale-90"><Copy size={20}/></button>
-           <button onClick={() => handleAction('paste')} title="Paste (Ctrl+V)" className={`p-3 rounded-2xl transition-all active:scale-90 ${clipboard ? 'text-slate-900 hover:bg-slate-100' : 'text-slate-200 cursor-not-allowed'}`} disabled={!clipboard}><Clipboard size={20}/></button>
-           <div className="w-px h-8 bg-slate-200 mx-1"></div>
-           <div className="px-4 font-black text-slate-900 text-xs min-w-[60px] text-center">{Math.round(zoom * 100)}%</div>
-           <button onClick={() => { setZoom(0.65); setOffset({ x: 0, y: 0 }); }} className="p-3 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 active:scale-90 transition-all"><Maximize size={20} /></button>
+      </div>{/* end viewportRef */}
+
+        {/* ── FOOTER BAR — lives outside canvas, never overlaps it ── */}
+        <div className="no-print shrink-0 bg-slate-100 border-t border-slate-200 flex flex-col items-center gap-2 py-3 px-4">
+          {/* Hint bar */}
+          <div className="flex items-center gap-3 text-[10px] font-black text-slate-400 uppercase tracking-wide whitespace-nowrap">
+            <span className="flex items-center gap-1"><MousePointer size={11} className="text-indigo-400" /> Click to select</span>
+            <span className="text-slate-300">|</span>
+            <span className="flex items-center gap-1"><Move size={11} className="text-indigo-400" /> Drag to move</span>
+            <span className="text-slate-300">|</span>
+            <span className="flex items-center gap-1"><ZoomIn size={11} className="text-indigo-400" /> Scroll to zoom</span>
+            <span className="text-slate-300">|</span>
+            <span className="flex items-center gap-1"><Hand size={11} className="text-indigo-400" /> Space+drag to pan</span>
+          </div>
+          {/* Toolbar mode settings popup */}
+          {showToolbarSettings && (
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-xl p-3 flex items-center gap-1 animate-in slide-in-from-bottom-2 duration-200">
+              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest pr-2">Formatting Bar</span>
+              {([['auto', 'Auto-hide'], ['show', 'Always show'], ['hide', 'Always hide']] as const).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  onClick={() => { setToolbarMode(mode); localStorage.setItem('ldd_toolbar_mode', mode); setShowToolbarSettings(false); }}
+                  className={`px-3 py-1.5 rounded-xl text-[10px] font-black transition-all ${toolbarMode === mode ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {/* Bottom action toolbar */}
+          <div className="bg-white border-2 border-slate-200 rounded-[30px] shadow-lg p-1.5 flex items-center gap-1">
+            <button onClick={undo} title="Undo (Ctrl+Z)" className="p-2.5 hover:bg-slate-100 rounded-2xl text-slate-900 transition-all active:scale-90"><Undo2 size={18}/></button>
+            <button onClick={redo} title="Redo (Ctrl+Y)" className="p-2.5 hover:bg-slate-100 rounded-2xl text-slate-900 transition-all active:scale-90"><Redo2 size={18}/></button>
+            <div className="w-px h-6 bg-slate-200 mx-1"></div>
+            <button onClick={() => handleAction('copy')} title="Copy (Ctrl+C)" className="p-2.5 hover:bg-slate-100 rounded-2xl text-slate-900 transition-all active:scale-90"><Copy size={18}/></button>
+            <button onClick={() => handleAction('paste')} title="Paste (Ctrl+V)" className={`p-2.5 rounded-2xl transition-all active:scale-90 ${clipboard ? 'text-slate-900 hover:bg-slate-100' : 'text-slate-200 cursor-not-allowed'}`} disabled={!clipboard}><Clipboard size={18}/></button>
+            <div className="w-px h-6 bg-slate-200 mx-1"></div>
+            <div className="px-3 font-black text-slate-900 text-xs min-w-[52px] text-center">{Math.round(zoom * 100)}%</div>
+            <button onClick={() => { setZoom(0.65); setOffset({ x: 0, y: 0 }); setTimeout(() => { const el = document.querySelector('[data-viewport]'); if (el) { const vw = el.clientWidth; const vh = el.clientHeight; setOffset({ x: (vw - CANVAS_WIDTH * 0.65) / 2, y: (vh - 64 - CANVAS_HEIGHT * 0.65) / 2 }); } }, 50); }} className="p-2.5 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 active:scale-90 transition-all"><Maximize size={18} /></button>
+            <div className="w-px h-6 bg-slate-200 mx-1"></div>
+            <button
+              onClick={() => setShowToolbarSettings(v => !v)}
+              title="Formatting toolbar settings"
+              className={`p-2.5 rounded-2xl transition-all active:scale-90 ${showToolbarSettings ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-slate-100 text-slate-400'}`}
+            >
+              <Settings size={16}/>
+            </button>
+          </div>
         </div>
-      </div>
+      </div>{/* end flex-col wrapper */}
 
       {contextMenu && (
         <>
@@ -3378,20 +3869,12 @@ const renderTipsPanel = () => {
 
                 {/* GROUP: Fonts */}
                 <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Fonts</div>
-                <div className="relative group">
-  <button
-    disabled
-    className="w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left text-slate-300 cursor-not-allowed"
-  >
-    <Upload size={16} /> Upload Custom Font
-  </button>
-  <div className="pointer-events-none absolute left-6 top-1/2 -translate-y-1/2 translate-x-40 opacity-0 group-hover:opacity-100 transition-opacity">
-    <div className="bg-white border border-slate-200 shadow-xl rounded-2xl px-4 py-3 w-56">
-      <div className="text-xs font-black text-slate-900">Coming soon</div>
-      <div className="text-[11px] text-slate-600 mt-1">Custom font uploads are temporarily disabled while export rendering is being improved.</div>
-    </div>
-  </div>
-</div>
+                <button
+                  onClick={() => handleAction('upload-font')}
+                  className="w-full px-6 py-3 flex items-center gap-4 text-xs font-black text-left text-slate-900 hover:bg-slate-50"
+                >
+                  <Upload size={16} /> Upload Custom Font
+                </button>
 
                 {/* GROUP: Edit */}
                 <div className="px-6 pt-2 pb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">Edit</div>
@@ -3494,18 +3977,12 @@ const renderTipsPanel = () => {
             <div className="mt-5 flex items-center justify-between gap-3">
               <div className="relative group">
   <button
-    disabled
-    className="px-4 py-2 rounded-xl font-black text-xs bg-slate-200 text-slate-400 cursor-not-allowed inline-flex items-center gap-2"
+    onClick={() => fontUploadRef.current?.click()}
+    className="px-4 py-2 rounded-xl font-black text-xs bg-emerald-600 text-white hover:bg-emerald-700 transition-all inline-flex items-center gap-2"
   >
     <Upload size={16} />
     Install Font
   </button>
-  <div className="pointer-events-none absolute left-0 top-full mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-    <div className="bg-white border border-slate-200 shadow-xl rounded-2xl px-4 py-3 w-64">
-      <div className="text-xs font-black text-slate-900">Coming soon</div>
-      <div className="text-[11px] text-slate-600 mt-1">Custom font uploads are temporarily disabled while we improve rendering consistency.</div>
-    </div>
-  </div>
 </div>
 
               <div className="flex-1" />
