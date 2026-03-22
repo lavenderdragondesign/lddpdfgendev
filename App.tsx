@@ -679,6 +679,7 @@ const previewGoogleFont = useCallback((family: string) => {
     try { return JSON.parse(localStorage.getItem('ldd_recent_projects') || '[]'); } catch { return []; }
   });
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+  const [openProjectTab, setOpenProjectTab] = useState<'recent' | 'presets'>('recent');
   const [newProjectNameInput, setNewProjectNameInput] = useState('');
   const [showGetStarted, setShowGetStarted] = useState(false);
   const [getStartedDontShow, setGetStartedDontShow] = useState(false);
@@ -1053,6 +1054,10 @@ useEffect(() => {
     setProjectName(proj.name);
     setRestoreChoiceMade(true);
     setRestoreModal(false);
+    // Show get started if no link set and not suppressed
+    setTimeout(() => {
+      if (localStorage.getItem('ldd_get_started_hidden') !== '1') setShowGetStarted(true);
+    }, 200);
   };
 
   // Start a brand-new project (called after user confirms name)
@@ -2224,19 +2229,47 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
       const scaleX = pdfWidth / CANVAS_WIDTH;
       const scaleY = pdfHeight / CANVAS_HEIGHT;
 
+      // Ensure URL has a protocol — bare domains like "google.com" become file paths in PDF viewers
+      const sanitizeUrl = (url: string) => {
+        const u = (url || '').trim();
+        if (!u) return u;
+        if (/^https?:\/\//i.test(u)) return u;
+        if (/^mailto:/i.test(u)) return u;
+        return 'https://' + u;
+      };
+
+      // Helper: add a clickable link that opens in a new browser tab
+      const addLink = (x: number, y: number, w: number, h: number, url: string) => {
+        url = sanitizeUrl(url);
+        try {
+          // Use jsPDF's internal annotation system with a URI action
+          (pdf as any).link(x, y, w, h, { url });
+          // Patch the last annotation to include the NewWindow flag in the raw PDF stream
+          const pages = (pdf as any).internal.pages;
+          const annots = (pdf as any).internal.annotations;
+          if (annots && annots[(pdf as any).internal.getCurrentPageInfo().pageNumber]) {
+            const arr = annots[(pdf as any).internal.getCurrentPageInfo().pageNumber];
+            const last = arr[arr.length - 1];
+            if (last && last.A) last.A.NewWindow = true;
+          }
+        } catch {
+          (pdf as any).link(x, y, w, h, { url });
+        }
+      };
+
       if (config.visibility.button && config.source.link) {
         const b = config.layout.blocks.button;
-        pdf.link(b.x * scaleX, b.y * scaleY, b.w * scaleX, b.h * scaleY, { url: config.source.link });
+        addLink(b.x * scaleX, b.y * scaleY, b.w * scaleX, b.h * scaleY, config.source.link);
       }
       if (config.visibility.qr && config.source.link) {
         const qr = config.layout.blocks.qr;
-        pdf.link(qr.x * scaleX, qr.y * scaleY, qr.w * scaleX, qr.h * scaleY, { url: config.source.link });
+        addLink(qr.x * scaleX, qr.y * scaleY, qr.w * scaleX, qr.h * scaleY, config.source.link);
       }
 
       // Add links for extra button layers (use their own link, or fall back to main download link)
       config.layout.extraLayers.filter(l => l.type === 'button' && l.visible !== false).forEach(l => {
         const url = (l.content || '').trim() || config.source.link;
-        if (url) pdf.link(l.x * scaleX, l.y * scaleY, l.w * scaleX, l.h * scaleY, { url });
+        if (url) addLink(l.x * scaleX, l.y * scaleY, l.w * scaleX, l.h * scaleY, url);
       });
 
       // Add links for socials
@@ -2245,7 +2278,7 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
         const linkSpacing = sb.w / activeSocialLinks.length;
         activeSocialLinks.forEach((social, i) => {
           const xOffset = i * linkSpacing;
-          pdf.link((sb.x + xOffset) * scaleX, sb.y * scaleY, linkSpacing * scaleX, sb.h * scaleY, { url: social.link });
+          addLink((sb.x + xOffset) * scaleX, sb.y * scaleY, linkSpacing * scaleX, sb.h * scaleY, social.link);
         });
       }
 
@@ -2428,7 +2461,18 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
                  <label className="text-[10px] font-black text-slate-900 uppercase">{key}</label>
                  <div className="flex items-center gap-3 mt-1 p-3 bg-white border-2 border-slate-100 rounded-2xl">
                    <Share2 size={16} className="text-slate-400" />
-                   <input className="flex-1 bg-transparent text-xs font-black outline-none" value={(config.socials as any)[key]} onChange={e => updateConfig(`socials.${key}`, e.target.value)} placeholder="URL..." />
+                   <input 
+                     className="flex-1 bg-transparent text-xs font-black outline-none" 
+                     value={(config.socials as any)[key]} 
+                     onChange={e => updateConfig(`socials.${key}`, e.target.value)}
+                     onBlur={e => {
+                       const v = e.target.value.trim();
+                       if (v && !/^https?:\/\//i.test(v) && !/^mailto:/i.test(v)) {
+                         updateConfig(`socials.${key}`, 'https://' + v);
+                       }
+                     }}
+                     placeholder="https://..." 
+                   />
                  </div>
                </div>
              ))}
@@ -2897,11 +2941,14 @@ const renderTipsPanel = () => {
                     className="bg-transparent text-xs font-black outline-none border-none cursor-pointer hover:text-indigo-600 transition-colors"
                     value={activeFont.family || (activeFont as any).fontFamily || 'Inter'}
                     onChange={e => {
+                      if (e.target.value === '__add_new__') { setFontManagerOpen(true); return; }
                       if (activeElementProps.isExtra) updateConfig('layout.extraLayers', config.layout.extraLayers.map(l => l.id === selectedId ? { ...l, fontFamily: e.target.value } : l));
                       else updateConfig(`fonts.blocks.${selectedId}.family`, e.target.value);
                     }}
                   >
                     {Array.from(new Set([...FONT_FAMILIES, ...googleFontsLoaded, ...customFontFamilies])).map(ff => <option key={ff} value={ff}>{ff}</option>)}
+                    <option disabled>──────────</option>
+                    <option value="__add_new__">+ Add New Font...</option>
                   </select>
                 </div>
 
@@ -3032,38 +3079,59 @@ const renderTipsPanel = () => {
       {restoreModal && !showOnboarding && (
         <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/50 backdrop-blur-sm p-6">
           <div className="bg-white rounded-[30px] p-8 max-w-md w-full shadow-2xl">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-5">
               <div>
-                <h3 className="text-xl font-black text-slate-900">Open Recent</h3>
+                <h3 className="text-xl font-black text-slate-900">Open Project</h3>
                 <p className="text-xs text-slate-400 mt-0.5">Pick a project or start fresh</p>
               </div>
               <button onClick={() => { setRestoreChoiceMade(true); setRestoreModal(false); }} className="p-2 rounded-xl hover:bg-slate-100 text-slate-400"><X size={18} /></button>
             </div>
 
-            {recentProjects.length > 0 ? (
-              <div className="space-y-2 max-h-64 overflow-auto mb-6">
-                {recentProjects.map(proj => (
-                  <button
-                    key={proj.id}
-                    onClick={() => handleOpenRecent(proj)}
-                    className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-indigo-50 border-2 border-transparent hover:border-indigo-200 rounded-2xl transition-all text-left group"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-sm font-black text-slate-900 truncate group-hover:text-indigo-700">{proj.name}</div>
-                      <div className="text-[10px] text-slate-400 mt-0.5">{new Date(proj.savedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
-                    </div>
-                    <RotateCw size={14} className="text-slate-300 group-hover:text-indigo-500 shrink-0 ml-3" />
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="text-center py-8 text-slate-400 text-xs mb-6">No recent projects yet.</div>
+            <div className="flex gap-2 mb-4">
+              <button onClick={() => setOpenProjectTab('recent')} className={`flex-1 py-2 rounded-xl font-black text-[11px] uppercase transition-all ${openProjectTab === 'recent' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Recent</button>
+              <button onClick={() => setOpenProjectTab('presets')} className={`flex-1 py-2 rounded-xl font-black text-[11px] uppercase transition-all ${openProjectTab === 'presets' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>Presets</button>
+            </div>
+
+            {openProjectTab === 'recent' && (
+              recentProjects.length > 0 ? (
+                <div className="space-y-2 max-h-64 overflow-auto mb-5">
+                  {recentProjects.map(proj => (
+                    <button key={proj.id} onClick={() => handleOpenRecent(proj)} className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-indigo-50 border-2 border-transparent hover:border-indigo-200 rounded-2xl transition-all text-left group">
+                      <div className="min-w-0">
+                        <div className="text-sm font-black text-slate-900 truncate group-hover:text-indigo-700">{proj.name}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">{new Date(proj.savedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                      </div>
+                      <RotateCw size={14} className="text-slate-300 group-hover:text-indigo-500 shrink-0 ml-3" />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-10 text-slate-400 text-xs mb-5">No recent projects yet.</div>
+              )
             )}
 
-            <button
-              onClick={() => { setShowNewProjectModal(true); setNewProjectNameInput(''); }}
-              className="w-full py-3 bg-indigo-600 text-white rounded-2xl font-black text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
-            >
+            {openProjectTab === 'presets' && (
+              savedPresets.length > 0 ? (
+                <div className="space-y-2 max-h-64 overflow-auto mb-5">
+                  {savedPresets.map((preset, idx) => (
+                    <button key={idx} onClick={() => { handleLoadPreset(preset.config); setRestoreChoiceMade(true); setRestoreModal(false); }} className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-indigo-50 border-2 border-transparent hover:border-indigo-200 rounded-2xl transition-all text-left group">
+                      <div className="min-w-0">
+                        <div className="text-sm font-black text-slate-900 truncate group-hover:text-indigo-700">{preset.name}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">Saved preset</div>
+                      </div>
+                      <div className="flex gap-1 shrink-0 ml-3">
+                        <RotateCw size={14} className="text-slate-300 group-hover:text-indigo-500" />
+                        <button onClick={(e) => { e.stopPropagation(); handleDeletePreset(idx); }} className="p-1 text-slate-300 hover:text-red-500 transition-all"><Trash2 size={13} /></button>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-10 text-slate-400 text-xs mb-5">No presets saved yet. Use the Project tab to save one.</div>
+              )
+            )}
+
+            <button onClick={() => { setShowNewProjectModal(true); setNewProjectNameInput(''); }} className="w-full py-3 bg-indigo-600 text-white rounded-2xl font-black text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2">
               <Plus size={16} /> New Project
             </button>
           </div>
@@ -3071,7 +3139,7 @@ const renderTipsPanel = () => {
       )}
 
       {/* Get Started modal */}
-      {showGetStarted && (
+      {showGetStarted && !showOnboarding && !restoreModal && (
         <div className="fixed inset-0 z-[225] flex items-center justify-center bg-black/50 backdrop-blur-sm p-6">
           <div className="bg-white rounded-[28px] shadow-2xl border border-slate-100 p-8 max-w-sm w-full text-center relative">
             <button
