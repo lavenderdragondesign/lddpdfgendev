@@ -13,7 +13,7 @@ import {
   Layout, Minimize2, ChevronRight, ChevronDown, ChevronUp, EyeOff, Search, QrCode, Heart, Coffee, FolderOpen,
   Waves, MousePointer, FileJson, Sparkles, Bold, Italic, Underline, ChevronLeft,
   ArrowUpToLine, ArrowDownToLine, ArrowUp, ArrowDown, Hand, ZoomIn, Check,
-  MessageSquarePlus, Smartphone, Image as ImageExport, SlidersHorizontal, Shuffle, RefreshCw
+  MessageSquarePlus, Smartphone, SlidersHorizontal, Shuffle, RefreshCw
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
@@ -686,7 +686,6 @@ const previewGoogleFont = useCallback((family: string) => {
   const [suggestSent, setSuggestSent] = useState(false);
   const [showMobilePreview, setShowMobilePreview] = useState(false);
   const [mobilePreviewImg, setMobilePreviewImg] = useState<string | null>(null);
-  const [exportScale, setExportScale] = useState<1|2|3>(2);
   const [newProjectNameInput, setNewProjectNameInput] = useState('');
   const [showGetStarted, setShowGetStarted] = useState(false);
   const [getStartedDontShow, setGetStartedDontShow] = useState(false);
@@ -768,22 +767,6 @@ useEffect(() => {
     };
   }, [contextMenu]);
 
-  const [showExportPopup, setShowExportPopup] = useState(false);
-  const [showPngResPopup, setShowPngResPopup] = useState(false);
-
-  // Close export popup on outside click
-  useEffect(() => {
-    if (!showExportPopup) return;
-    const close = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest('[data-export-popup]')) {
-        setShowExportPopup(false);
-        setShowPngResPopup(false);
-      }
-    };
-    window.addEventListener('mousedown', close);
-    return () => window.removeEventListener('mousedown', close);
-  }, [showExportPopup]);
   const [showSettings, setShowSettings] = useState(false);
   const [restoreDontAsk, setRestoreDontAsk] = useState(false);
 
@@ -1115,23 +1098,6 @@ useEffect(() => {
     return () => clearTimeout(t);
   }, [showMobilePreview, config]);
 
-  const handleExportPNG = async () => {
-    const canvas = document.getElementById('pdf-canvas');
-    if (!canvas) return;
-    try {
-      const c = await renderElementForExport(canvas as HTMLElement, config.colors.background);
-      const finalCanvas = document.createElement('canvas');
-      finalCanvas.width = c.width * exportScale / 2;
-      finalCanvas.height = c.height * exportScale / 2;
-      const ctx = finalCanvas.getContext('2d');
-      if (!ctx) return;
-      ctx.scale(exportScale / 2, exportScale / 2);
-      ctx.drawImage(c, 0, 0);
-      pendingPngRef.current = finalCanvas.toDataURL('image/png');
-      setRenamePngValue('');
-      setRenamePngModalOpen(true);
-    } catch (e) { alert('PNG export failed. Please try again.'); }
-  };
 
   const handleGlobalFontSwitch = (family: string) => {
     if (!family || family === '__add_new__') return;
@@ -1782,9 +1748,6 @@ case 'delete':
 	  const [renameModalOpen, setRenameModalOpen] = useState(false);
 	  const [renameDefault, setRenameDefault] = useState('export.pdf');
 	  const [renameValue, setRenameValue] = useState('');
-  const pendingPngRef = useRef<string | null>(null);
-  const [renamePngModalOpen, setRenamePngModalOpen] = useState(false);
-  const [renamePngValue, setRenamePngValue] = useState('');
 
   
   // --- Export font stabilization ---
@@ -1877,8 +1840,28 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
     opacity: 1 !important;
     visibility: visible !important;
     background-color: ${bgColor} !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
   `;
   document.body.appendChild(clone);
+
+  // Remove editor-only chrome from the cloned export surface.
+  try {
+    clone.style.border = 'none';
+    clone.style.outline = 'none';
+    clone.style.boxShadow = 'none';
+
+    const exportSurface = clone.querySelector('#pdf-canvas') as HTMLElement | null;
+    if (exportSurface) {
+      exportSurface.style.border = 'none';
+      exportSurface.style.outline = 'none';
+      exportSurface.style.boxShadow = 'none';
+      exportSurface.style.margin = '0';
+    }
+  } catch {}
 
   // Inject custom font @font-face rules into the clone so html2canvas can render them correctly.
   try {
@@ -1908,7 +1891,7 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
   const baseOpts: any = {
     useCORS: true,
     allowTaint: false,
-    scale: exportScale,
+    scale: 2,
     backgroundColor: bgColor,
     letterRendering: false,
     width: el.offsetWidth,
@@ -2050,12 +2033,21 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
       img.style.height = '100%';
       img.style.pointerEvents = 'none';
       img.style.zIndex = '5';
+      img.style.borderRadius = 'inherit';
 
-      // Prevent export-time clipping caused by border-radius + overflow hidden masking (html2canvas).
+      // Preserve the live button shape in export so rounded buttons stay rounded.
       const prevOverflow = btnBlock.style.overflow;
       const prevRadius = btnBlock.style.borderRadius;
-      btnBlock.style.overflow = 'visible';
-      btnBlock.style.borderRadius = '0';
+      const prevPosition = btnBlock.style.position;
+
+      const computedBtn = window.getComputedStyle(btnBlock);
+      const exportRadius = computedBtn.borderRadius || prevRadius || '9999px';
+
+      if (!prevPosition || prevPosition === 'static') {
+        btnBlock.style.position = 'relative';
+      }
+      btnBlock.style.overflow = 'hidden';
+      btnBlock.style.borderRadius = exportRadius;
 
       const prevVisibility = labelEl.style.visibility;
       labelEl.style.visibility = 'hidden';
@@ -2067,6 +2059,7 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
           labelEl.style.visibility = prevVisibility;
           btnBlock.style.overflow = prevOverflow;
           btnBlock.style.borderRadius = prevRadius;
+          btnBlock.style.position = prevPosition;
         } catch {}
       };
     } catch {
@@ -2496,8 +2489,8 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
                    </div>
                  </div>
                )}
-            </div>
           </div>
+        </div>
         );
       case EditorTab.ASSETS:
         return (
@@ -3621,78 +3614,6 @@ const renderTipsPanel = () => {
 	        </div>
 	      )}
 
-      {/* PNG Rename Modal */}
-      {renamePngModalOpen && (
-        <div className="fixed inset-0 z-[235] flex items-center justify-center bg-black/60 backdrop-blur-sm p-6">
-          <div className="bg-white rounded-[28px] p-7 max-w-md w-full shadow-2xl border border-slate-100">
-            <div className="flex items-start gap-4">
-              <div className="w-12 h-12 bg-slate-50 rounded-2xl flex items-center justify-center shrink-0">
-                <ImageExport className="text-slate-700" size={24} />
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-black text-slate-900">Name your PNG</h3>
-                <p className="text-xs text-slate-600 mt-1">Rename it now, or skip and use the default.</p>
-              </div>
-              <button
-                onClick={() => { setRenamePngModalOpen(false); pendingPngRef.current = null; }}
-                className="p-2 rounded-xl hover:bg-slate-100"
-                title="Close"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div className="mt-4">
-              <label className="text-[11px] font-black text-slate-700 uppercase">File name</label>
-              <input
-                value={renamePngValue}
-                onChange={(e) => setRenamePngValue(e.target.value)}
-                className="mt-2 w-full px-4 py-3 rounded-2xl border-2 border-slate-200 focus:outline-none focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 font-bold"
-                placeholder="Exported_PDF_PNG"
-              />
-              <div className="text-[11px] text-slate-500 mt-2">Tip: ".png" will be added if you forget it.</div>
-            </div>
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => {
-                  const dataUrl = pendingPngRef.current;
-                  if (!dataUrl) return;
-                  const link = document.createElement('a');
-                  link.download = 'Exported_PDF_PNG.png';
-                  link.href = dataUrl;
-                  link.click();
-                  pendingPngRef.current = null;
-                  setRenamePngModalOpen(false);
-                }}
-                className="flex-1 py-3 bg-slate-100 text-slate-700 rounded-xl font-black text-xs hover:bg-slate-200"
-              >
-                Skip
-              </button>
-              <button
-                onClick={() => {
-                  const dataUrl = pendingPngRef.current;
-                  if (!dataUrl) return;
-                  const raw = (renamePngValue || 'Exported_PDF_PNG').trim();
-                  if (!raw) return;
-                  const safe = raw.toLowerCase().endsWith('.png') ? raw : `${raw}.png`;
-                  const link = document.createElement('a');
-                  link.download = safe;
-                  link.href = dataUrl;
-                  link.click();
-                  pendingPngRef.current = null;
-                  setRenamePngModalOpen(false);
-                }}
-                className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-black text-xs shadow-lg shadow-indigo-100 hover:bg-indigo-700"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-
-
-
       {/* ICON SIDEBAR (Fixed Width) */}
       <div className={`no-print w-24 bg-white border-r-2 border-slate-100 flex flex-col items-center gap-8 z-[110] shadow-2xl shrink-0 transition-all duration-300 ${toolbarMode === 'hide' ? 'py-8' : toolbarMode === 'show' ? 'pt-20 pb-8' : selectedId ? 'pt-20 pb-8' : 'py-8'}`}>
         {[
@@ -3747,75 +3668,12 @@ const renderTipsPanel = () => {
           {/* Main export buttons */}
           <div className="flex gap-3">
             <button onClick={() => handleExportPDF(true)} className="flex-1 py-4 bg-white border-2 border-slate-200 text-slate-900 rounded-2xl font-black text-xs hover:bg-slate-50 transition-all flex items-center justify-center gap-2"><Eye size={16} /> Preview</button>
-            {/* Export button — click opens white card popup */}
-            <div className="relative flex-[1.5]" data-export-popup>
-              <button
-                onClick={() => { setShowExportPopup(v => !v); setShowPngResPopup(false); }}
-                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200 flex items-center justify-center gap-2"
-              >
-                <Download size={16} /> Export
-              </button>
-
-              {/* Main export card popup */}
-              {showExportPopup && (
-                <div className="absolute bottom-full mb-3 left-0 right-0 z-[200]">
-                  {/* caret */}
-                  <div className="w-3 h-3 bg-white border-l-2 border-t-2 border-slate-200 rotate-45 absolute -bottom-1.5 left-1/2 -translate-x-1/2" />
-                  <div className="bg-white border-2 border-slate-200 rounded-2xl shadow-2xl p-3 space-y-2">
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1">Export as</p>
-
-                    {/* PDF button */}
-                    <button
-                      onClick={() => { handleExportPDF(false); setShowExportPopup(false); }}
-                      className="w-full px-4 py-3 bg-indigo-50 hover:bg-indigo-100 border-2 border-indigo-100 rounded-2xl flex items-center gap-3 text-xs font-black text-indigo-700 transition-all"
-                    >
-                      <Download size={15} className="text-indigo-600 shrink-0" />
-                      <span>PDF</span>
-                    </button>
-
-                    {/* PNG button — click opens resolution sub-popup */}
-                    <div className="relative">
-                      <button
-                        onClick={() => setShowPngResPopup(v => !v)}
-                        className="w-full px-4 py-3 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-2xl flex items-center gap-3 text-xs font-black text-slate-700 transition-all"
-                      >
-                        <ImageExport size={15} className="text-slate-500 shrink-0" />
-                        <span className="flex-1 text-left">PNG</span>
-                        <ChevronRight size={13} className={`text-slate-300 transition-transform ${showPngResPopup ? 'rotate-90' : ''}`} />
-                      </button>
-
-                      {/* PNG resolution + note sub-popup */}
-                      {showPngResPopup && (
-                        <div className="mt-2 bg-white border-2 border-slate-200 rounded-2xl shadow-xl p-3 space-y-2">
-                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1">Resolution</p>
-                          <div className="flex gap-2">
-                            {([1, 2, 3] as const).map(s => (
-                              <button
-                                key={s}
-                                onClick={() => setExportScale(s)}
-                                className={`flex-1 py-2 rounded-xl text-[10px] font-black transition-all border-2 ${exportScale === s ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-indigo-300'}`}
-                              >
-                                {s}x
-                              </button>
-                            ))}
-                          </div>
-                          <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-                            <span className="text-amber-500 text-[11px] shrink-0">⚠</span>
-                            <p className="text-[9px] font-bold text-amber-700 leading-relaxed">PNG has no clickable links. Best for cards &amp; social posts.</p>
-                          </div>
-                          <button
-                            onClick={() => { handleExportPNG(); setShowExportPopup(false); setShowPngResPopup(false); }}
-                            className="w-full py-2.5 bg-slate-900 hover:bg-slate-700 text-white rounded-xl font-black text-[10px] transition-all flex items-center justify-center gap-1.5"
-                          >
-                            <Download size={12} /> Export PNG
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+            <button
+              onClick={() => handleExportPDF(false)}
+              className="flex-[1.5] py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200 flex items-center justify-center gap-2"
+            >
+              <Download size={16} /> Export PDF
+            </button>
           </div>
         </div>
       </div>{/* END MAIN PROPERTY SIDEBAR */}
@@ -4788,8 +4646,8 @@ const renderTipsPanel = () => {
           </div>
         </div>
       )}
-  </div>
-  );
+    </div>
+    );
 };
 
 export default App;
