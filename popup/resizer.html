@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LDD Quick Resizer</title>
+  <style>
+    :root {
+      --bg: #f4f6fb;
+      --surface: #ffffff;
+      --surface-soft: #f7f9fc;
+      --line: #dde3ee;
+      --text: #172033;
+      --muted: #5a6783;
+      --accent: #3f5efb;
+      --accent-bg: #edf1ff;
+      --accent-border: #c9d3ff;
+      --ok: #1e8e5a;
+      --err: #b3261e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 430px; height: 640px; overflow: hidden;
+      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      background: var(--bg); color: var(--text); font-size: 12px;
+    }
+    .app { display: flex; flex-direction: column; height: 100%; }
+
+    /* Header */
+    .header {
+      background: var(--surface); border-bottom: 1px solid var(--line);
+      padding: 10px 12px; display: flex; align-items: center; gap: 10px;
+      flex-shrink: 0;
+    }
+    .logo {
+      width: 28px; height: 28px; background: var(--accent); border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 9px; font-weight: 800; letter-spacing: -.5px; flex-shrink: 0;
+    }
+    .header-text h1 { font-size: 14px; font-weight: 700; line-height: 1; }
+    .header-text p { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+    /* Scrollable body */
+    .body {
+      flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .body::-webkit-scrollbar { width: 4px; }
+    .body::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
+
+    /* Cards */
+    .card {
+      background: var(--surface); border: 1px solid var(--line);
+      border-radius: 12px; padding: 10px;
+    }
+    .section-label {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted); margin-bottom: 7px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .badge {
+      background: var(--accent-bg); color: var(--accent);
+      font-size: 9px; font-weight: 700; border-radius: 4px; padding: 1px 5px;
+    }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed var(--accent-border); border-radius: 10px;
+      background: var(--accent-bg); padding: 16px 10px;
+      text-align: center; cursor: pointer; transition: all .15s;
+    }
+    .drop-zone:hover, .drop-zone.over { border-color: var(--accent); background: #e4ebff; }
+    .drop-icon { font-size: 22px; margin-bottom: 4px; }
+    .drop-title { font-weight: 700; color: var(--accent); font-size: 12px; }
+    .drop-hint { color: var(--muted); font-size: 10px; margin-top: 2px; }
+
+    /* Image list */
+    .img-list { display: flex; flex-direction: column; gap: 5px; margin-top: 7px; }
+    .img-row {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--surface-soft); border: 1px solid var(--line);
+      border-radius: 8px; padding: 5px 8px;
+    }
+    .img-thumb { width: 32px; height: 32px; object-fit: contain; border-radius: 5px; background: #eee; flex-shrink: 0; }
+    .img-info { flex: 1; overflow: hidden; }
+    .img-name { font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .img-dims { font-size: 10px; color: var(--muted); }
+    .img-del { border: none; background: none; cursor: pointer; color: #ccc; font-size: 14px; line-height: 1; transition: color .1s; }
+    .img-del:hover { color: #ef4444; }
+
+    /* Size grid */
+    .size-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 7px; }
+    .size-btn {
+      border: 1.5px solid var(--line); border-radius: 8px; background: var(--surface);
+      padding: 7px 9px; text-align: left; cursor: pointer; transition: all .12s; position: relative;
+    }
+    .size-btn:hover { border-color: #a5b4fc; background: var(--accent-bg); }
+    .size-btn.sel { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
+    .size-dims { font-size: 11px; font-weight: 700; }
+    .size-lbl { font-size: 10px; color: var(--muted); margin-top: 1px; }
+    .size-btn.sel .size-lbl { color: #818cf8; }
+    .size-check { position: absolute; top: 5px; right: 7px; font-size: 10px; color: var(--accent); display: none; }
+    .size-btn.sel .size-check { display: block; }
+
+    /* Custom row */
+    .custom-row { display: flex; align-items: center; gap: 5px; }
+    .custom-row .field { text-align: center; }
+    .sep { color: var(--muted); font-size: 13px; flex-shrink: 0; }
+
+    /* Fields */
+    label { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--muted); font-weight: 700; }
+    .field {
+      width: 100%; border: 1px solid var(--line); border-radius: 7px;
+      background: var(--surface); color: var(--text); padding: 6px 8px; font-size: 11px; outline: none;
+    }
+    .field:focus { border-color: var(--accent); }
+
+    /* Checks */
+    .checks { display: flex; flex-direction: column; gap: 4px; }
+    .check-row {
+      display: flex; flex-direction: row; align-items: center; gap: 7px;
+      font-size: 11px; color: var(--text); font-weight: 400; cursor: pointer;
+      padding: 4px 6px; border-radius: 6px; transition: background .1s;
+    }
+    .check-row:hover { background: var(--surface-soft); }
+    .check-row input { width: 13px; height: 13px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+
+    /* Options grid */
+    .opts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+    /* Pad color row */
+    .pad-row { display: flex; flex-direction: column; gap: 3px; }
+    .color-wrap { display: flex; align-items: center; gap: 7px; }
+    .color-input { width: 30px; height: 26px; border: 1px solid var(--line); border-radius: 6px; padding: 2px; cursor: pointer; background: none; }
+    .color-hex { font-size: 11px; color: var(--muted); font-family: monospace; }
+
+    /* Buttons */
+    .btn {
+      border: 1px solid var(--line); background: var(--surface-soft); color: var(--text);
+      border-radius: 7px; padding: 6px 9px; font-size: 11px; font-weight: 600; cursor: pointer; transition: background .1s;
+    }
+    .btn:hover { background: #e8ecf5; }
+    .btn.primary { border-color: var(--accent-border); background: var(--accent-bg); color: #2e47c6; }
+    .btn.primary:hover { background: #dce4ff; }
+    .btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    /* Footer */
+    .footer {
+      padding: 10px 12px; border-top: 1px solid var(--line);
+      background: var(--surface); flex-shrink: 0;
+    }
+    #export-btn {
+      width: 100%; padding: 9px; border: none; border-radius: 9px;
+      background: var(--accent); color: #fff; font-size: 12px; font-weight: 700;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      gap: 7px; transition: background .15s, opacity .15s;
+    }
+    #export-btn:hover:not(:disabled) { background: #2e47c6; }
+    #export-btn:disabled { opacity: .45; cursor: not-allowed; }
+    #progress-wrap { height: 3px; background: var(--line); border-radius: 3px; margin-top: 8px; overflow: hidden; display: none; }
+    #progress-bar { height: 100%; background: var(--accent); width: 0%; transition: width .2s; }
+    #status { font-size: 10px; color: var(--muted); text-align: center; margin-top: 6px; min-height: 13px; }
+    #status.ok { color: var(--ok); }
+    #status.err { color: var(--err); }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <div class="header">
+    <img src="../assets/logo.png" alt="LDD" style="width:28px;height:28px;border-radius:7px;flex-shrink:0;" />
+    <div class="header-text">
+      <h1>Quick Resizer</h1>
+      <p>Bulk resize · 300 DPI · ZIP export</p>
+    </div>
+  </div>
+
+  <div class="body">
+
+    <!-- Images -->
+    <div class="card">
+      <div class="section-label">Images <span id="img-count" class="badge">0</span></div>
+      <div id="drop-zone" class="drop-zone">
+        <input id="file-input" type="file" accept="image/*" multiple style="display:none" />
+        <div class="drop-icon">🖼️</div>
+        <div class="drop-title">Drop images or click to browse</div>
+        <div class="drop-hint">PNG · JPG · WebP — multiple files supported</div>
+      </div>
+      <div id="img-list" class="img-list"></div>
+    </div>
+
+    <!-- Sizes -->
+    <div class="card">
+      <div class="section-label">Output Sizes <span id="sel-count" class="badge">1</span></div>
+      <div id="size-grid" class="size-grid"></div>
+      <div class="custom-row">
+        <input id="cw" class="field" type="number" placeholder="Width" min="1" />
+        <span class="sep">×</span>
+        <input id="ch" class="field" type="number" placeholder="Height" min="1" />
+        <button id="add-custom" class="btn" type="button" style="flex-shrink:0">+ Add</button>
+      </div>
+    </div>
+
+    <!-- Processing Options -->
+    <div class="card">
+      <div class="section-label">Processing Options</div>
+      <div class="opts-grid" style="margin-bottom:8px">
+        <label>Fit Mode
+          <select id="mode" class="field">
+            <option value="contain">Contain (fit inside)</option>
+            <option value="cover">Cover (crop to fill)</option>
+            <option value="stretch">Stretch (distort)</option>
+            <option value="pad">Pad (fit + fill bg)</option>
+          </select>
+        </label>
+        <label>ZIP Folder By
+          <select id="folder" class="field">
+            <option value="bySize">Size</option>
+            <option value="byImage">Image name</option>
+            <option value="flat">Flat (no folders)</option>
+          </select>
+        </label>
+      </div>
+      <div id="pad-row" class="pad-row" style="display:none;margin-bottom:8px">
+        <label>Background Color</label>
+        <div class="color-wrap" style="margin-top:3px">
+          <input id="pad-color" class="color-input" type="color" value="#ffffff" />
+          <span id="pad-hex" class="color-hex">#ffffff</span>
+        </div>
+      </div>
+      <div class="checks">
+        <label class="check-row"><input id="transparency" type="checkbox" checked /> Keep Transparency (PNG / WebP)</label>
+        <label class="check-row"><input id="to-png" type="checkbox" /> Force Convert to PNG</label>
+        <label class="check-row"><input id="sharpen" type="checkbox" /> Apply Slight Sharpening</label>
+      </div>
+    </div>
+
+  </div><!-- /body -->
+
+  <div class="footer">
+    <button id="export-btn" disabled type="button">
+      <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor"><path d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"/></svg>
+      Export ZIP
+    </button>
+    <div id="progress-wrap"><div id="progress-bar"></div></div>
+    <div id="status"></div>
+  </div>
+
+</div>
+<script src="../libs/jszip.min.js"></script>
+<script src="./resizer.js"></script>
+</body>
+</html>

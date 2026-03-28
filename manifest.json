@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "LDD MD Enhancer",
+  "version": "1.1.0",
+  "description": "Supercharge MyDesigns.io with a Quick Actions Bar, Profit Calculator, Prompt Clipboard, Image Tools, Drag & Drop Upload, and full-page theme customization.",
+  "icons": {
+    "16": "assets/icon16.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
+  "action": {
+    "default_title": "LDD MD Enhancer",
+    "default_popup": "popup/popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "windows"
+  ],
+  "host_permissions": [
+    "https://mydesigns.io/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mydesigns.io/*"
+      ],
+      "js": [
+        "libs/jszip.min.js",
+        "content/ui-mods.js",
+        "content/dropper.js",
+        "content/enhancer.js",
+        "content/content-script.js",
+        "content/resizer.js",
+        "content/compressor.js",
+        "content/card-actions.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "assets/logo.png",
+        "assets/icon48.png",
+        "assets/icon128.png",
+        "libs/jszip.min.js",
+        "libs/pako.min.js",
+        "libs/UPNG.js"
+      ],
+      "matches": [
+        "https://mydesigns.io/*"
+      ]
+    }
+  ]
+}

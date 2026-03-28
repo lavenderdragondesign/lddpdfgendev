@@ -12,13 +12,6 @@ export enum EditorTab {
   PRESETS = 'presets'
 }
 
-// Enum used by Sidebar for main application navigation tabs
-export enum AppTab {
-  BRAINSTORM = 'brainstorm',
-  ROADMAP = 'roadmap',
-  VISUALIZE = 'visualize',
-  PITCH = 'pitch'
-}
 
 export interface BlockFont {
   family: string;
@@ -63,12 +56,6 @@ export interface ExtraLayer {
   underline?: boolean;
 }
 
-// Recursive interface for AI-generated roadmap structures
-export interface RoadmapNode {
-  name: string;
-  description?: string;
-  children?: RoadmapNode[];
-}
 
 export interface PDFConfig {
   source: {
@@ -122,6 +109,8 @@ export interface PDFConfig {
   socials: {
     facebook: string;
     instagram: string;
+    twitter: string;
+    threads: string;
     etsy: string;
     website: string;
     shopify: string;

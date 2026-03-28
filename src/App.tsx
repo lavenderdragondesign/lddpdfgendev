@@ -16,6 +16,7 @@ import {
   MessageSquarePlus, Smartphone, Image as ImageExport, SlidersHorizontal, Shuffle, RefreshCw, AlertTriangle
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
+import SocialIconGrid from '../components/SocialIconGrid';
 import { jsPDF } from 'jspdf';
 import * as pdfjsLib from 'pdfjs-dist';
 
@@ -2976,12 +2977,33 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
         );
       case EditorTab.SOCIALS:
         return (() => {
-          const socialEntries = SOCIAL_CARDS.map(item => ({
-            ...item,
-            value: ((config.socials as any)[item.key] || '') as string,
-            isDisabled: Boolean(item.disabled),
-          }));
-          const activeCount = socialEntries.filter(item => item.value.trim() && !item.isDisabled).length + ((((config.socials as any).customLink || '') as string).trim() ? 1 : 0);
+          // Map existing config keys to SocialIconGrid's key format
+          const socialKeyMap: Record<string, string> = {
+            twitter: 'x',
+            facebook: 'facebook',
+            instagram: 'instagram',
+            tiktok: 'tiktok',
+            pinterest: 'pinterest',
+            threads: 'threads',
+            youtube: 'youtube',
+            canva: 'canva',
+          };
+
+          // Build value prop for SocialIconGrid
+          const gridValue = Object.entries(socialKeyMap).reduce((acc, [configKey, gridKey]) => {
+            const url = ((config.socials as any)[configKey] || '') as string;
+            return { ...acc, [gridKey]: { url, hidden: false } };
+          }, {} as Record<string, { url: string; hidden: boolean }>);
+
+          const handleGridChange = (nextLinks: Record<string, { url: string; hidden: boolean }>) => {
+            // Map back from gridKey -> configKey
+            const reverseMap: Record<string, string> = { x: 'twitter' };
+            Object.entries(nextLinks).forEach(([gridKey, data]) => {
+              const configKey = reverseMap[gridKey] || gridKey;
+              updateConfig(`socials.${configKey}`, data.url);
+            });
+          };
+
           const setSocialValue = (key: string, value: string) => updateConfig(`socials.${key}`, value);
           const handleQuickPaste = (raw: string) => {
             const detected = detectPlatformFromUrl(raw);
@@ -2992,26 +3014,28 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
           return (
             <div className="space-y-5">
               <div className="rounded-[24px] border-2 border-slate-100 bg-white p-4 shadow-sm">
-                <div className="mb-3 flex items-start justify-between gap-3">
+                <div className="mb-4 flex items-start justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-black uppercase text-slate-900">Social Presence</h3>
-                    <p className="mt-1 text-[10px] font-bold italic text-slate-400">Add the links you want in the footer. Keep it tidy. Nobody wants icon confetti.</p>
-                  </div>
-                  <div className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-slate-600">
-                    {activeCount} active
+                    <p className="mt-1 text-[10px] font-bold italic text-slate-400">Click an icon to set its link. Drag to reorder. Keep it tidy.</p>
                   </div>
                 </div>
 
+                <SocialIconGrid
+                  value={gridValue as any}
+                  onChange={handleGridChange as any}
+                  className="mb-2"
+                />
+              </div>
+
+              <div className="rounded-[24px] border-2 border-slate-100 bg-white p-4 shadow-sm">
                 <div
                   className="rounded-2xl border-2 border-slate-100 bg-slate-50 p-3 transition-all hover:border-indigo-200 hover:bg-white"
-                  onMouseEnter={(e) => { const r = e.currentTarget.getBoundingClientRect(); setSocialTooltip({ label: 'Paste any URL and it will try to sort itself.', x: r.left + r.width / 2, y: r.top - 10 }); }}
-                  onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); setSocialTooltip({ label: 'Paste any URL and it will try to sort itself.', x: r.left + r.width / 2, y: r.top - 10 }); }}
-                  onMouseLeave={() => setSocialTooltip(t => t?.label === 'Paste any URL and it will try to sort itself.' ? null : t)}
                 >
-                  <label className="mb-2 block text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Quick Paste</label>
+                  <label className="mb-2 block text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Quick Paste (Stores)</label>
                   <input
                     className="w-full bg-transparent text-sm font-bold text-slate-700 outline-none placeholder:text-slate-300"
-                    placeholder="Paste a Facebook, Etsy, Shopify, TikTok, or X URL here..."
+                    placeholder="Paste an Etsy, Shopify, or WooCommerce URL here..."
                     onPaste={(e) => {
                       const pasted = e.clipboardData.getData('text');
                       if (pasted) setTimeout(() => handleQuickPaste(pasted), 0);
@@ -3027,31 +3051,22 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
                 </div>
               </div>
 
-              {SOCIAL_GROUPS.map(group => {
-                const items = socialEntries.filter(item => group.keys.includes(item.key as any));
-                return (
-                  <div key={group.title} className="space-y-3">
-                    <div className="px-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{group.title}</div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {items.map(item => {
-                        const tooltipLabel = item.isDisabled
-                          ? `${item.label} · Coming Soon`
-                          : item.value.trim()
-                          ? `${item.label} · Link attached`
-                          : `Add ${item.label} link`;
+              {/* Store links (Etsy, Shopify, WooCommerce, Website) — kept as simple inputs */}
+              <div className="space-y-3">
+                <div className="px-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Stores</div>
+                <div className="grid grid-cols-2 gap-3">
+                  {SOCIAL_CARDS.filter(item => item.group === 'Stores').map(item => {
+                    const value = ((config.socials as any)[item.key] || '') as string;
+                    const tooltipLabel = value.trim() ? `${item.label} · Link attached` : `Add ${item.label} link`;
 
                         return (
                           <div
                             key={item.key}
-                            className={`relative rounded-[24px] border-2 p-3 transition-all ${item.isDisabled ? 'border-slate-100 bg-slate-50 opacity-60' : item.value.trim() ? 'border-indigo-200 bg-indigo-50/70 shadow-sm' : 'border-slate-100 bg-white hover:border-slate-200 hover:shadow-sm'}`}
+                            className={`relative rounded-[24px] border-2 p-3 transition-all ${value.trim() ? 'border-indigo-200 bg-indigo-50/70 shadow-sm' : 'border-slate-100 bg-white hover:border-slate-200 hover:shadow-sm'}`}
                             onMouseEnter={(e) => { const r = e.currentTarget.getBoundingClientRect(); setSocialTooltip({ label: tooltipLabel, x: r.left + r.width / 2, y: r.top - 10 }); }}
                             onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); setSocialTooltip({ label: tooltipLabel, x: r.left + r.width / 2, y: r.top - 10 }); }}
                             onMouseLeave={() => setSocialTooltip(t => t?.label === tooltipLabel ? null : t)}
                           >
-                            {item.isDisabled && (
-                              <span className="absolute right-3 top-3 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.15em] text-slate-500 shadow-sm">Coming Soon</span>
-                            )}
-
                             <div className="mb-3 flex items-center gap-3">
                               <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-100 bg-white shadow-sm overflow-hidden">
                                 {SOCIAL_ICON_ASSETS[item.key]
@@ -3060,44 +3075,39 @@ const renderElementForExport = async (el: HTMLElement, bg: string): Promise<HTML
                               </div>
                               <div className="min-w-0">
                                 <div className="truncate text-xs font-black uppercase text-slate-900">{item.label}</div>
-                                <div className="text-[10px] font-bold text-slate-400">{item.isDisabled ? 'Not available yet' : item.value.trim() ? 'Link attached' : 'No link yet'}</div>
+                                <div className="text-[10px] font-bold text-slate-400">{value.trim() ? 'Link attached' : 'No link yet'}</div>
                               </div>
                             </div>
 
                             <input
-                              className={`w-full rounded-2xl border-2 px-3 py-2.5 text-xs font-bold outline-none transition-all placeholder:text-slate-300 ${item.isDisabled ? 'cursor-not-allowed border-slate-100 bg-slate-50 text-slate-400' : 'border-slate-100 bg-white focus:border-indigo-300'}`}
-                              value={item.value}
-                              disabled={item.isDisabled}
+                              className="w-full rounded-2xl border-2 px-3 py-2.5 text-xs font-bold outline-none transition-all placeholder:text-slate-300 border-slate-100 bg-white focus:border-indigo-300"
+                              value={value}
                               onChange={e => setSocialValue(item.key, e.target.value)}
                               onBlur={e => setSocialValue(item.key, normalizeSocialValue(e.target.value))}
-                              placeholder={item.isDisabled ? 'Coming soon' : 'Paste link...'}
+                              placeholder="Paste link..."
                             />
 
-                            {!item.isDisabled && (
-                              <div className="mt-3 flex items-center justify-between gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => { if (!item.value.trim()) return; navigator.clipboard.writeText(item.value).catch(() => {}); }}
-                                  className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-slate-600 transition-all hover:border-slate-300 hover:bg-slate-50"
-                                >
-                                  Copy
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setSocialValue(item.key, '')}
-                                  className="rounded-xl border border-red-200 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-red-500 transition-all hover:bg-red-50"
-                                >
-                                  Clear
-                                </button>
-                              </div>
-                            )}
+                            <div className="mt-3 flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => { if (!value.trim()) return; navigator.clipboard.writeText(value).catch(() => {}); }}
+                                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-slate-600 transition-all hover:border-slate-300 hover:bg-slate-50"
+                              >
+                                Copy
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSocialValue(item.key, '')}
+                                className="rounded-xl border border-red-200 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-red-500 transition-all hover:bg-red-50"
+                              >
+                                Clear
+                              </button>
+                            </div>
                           </div>
                         );
                       })}
                     </div>
                   </div>
-                );
-              })}
 
               <div className="rounded-[24px] border-2 border-slate-100 bg-white p-4 space-y-3 shadow-sm">
                 <div className="flex items-center justify-between gap-3">

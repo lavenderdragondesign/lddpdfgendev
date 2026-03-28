@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LDD MD Enhancer</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <div class="brand">
+          <img src="../assets/logo.png" alt="LDD" class="brand-icon" />
+          <div>
+            <h1>LDD Enhancer</h1>
+            <p>MD Enhancer + Quick Actions Bar + Drag and Drop Upload</p>
+          </div>
+        </div>
+        <div id="siteStatus" class="status-pill">Checking active tab...</div>
+      </header>
+
+      <section class="card toggles">
+        <div class="toggle-grid">
+          <label class="toggle-card">
+            <span>Quick Actions Bar</span>
+            <input id="qaBarEnabled" type="checkbox" />
+          </label>
+          <label class="toggle-card">
+            <span>Drag and Drop Upload</span>
+            <input id="dropperEnabled" type="checkbox" />
+          </label>
+        </div>
+        <div class="button-row full-toggle-row">
+          <button id="fullEnable" class="btn primary" type="button">Full Enable</button>
+          <button id="fullDisable" class="btn" type="button">Full Disable</button>
+        </div>
+        <p class="popup-hint">⚙️ These controls are also available in the <strong>Settings tab</strong> of the in-page Enhancer panel.</p>
+      </section>
+
+      <footer id="statusMessage" class="status-message"></footer>
+    </main>
+    <script src="./popup.js"></script>
+  </body>
+</html>

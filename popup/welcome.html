@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Welcome to LDD Enhancer</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+        background: linear-gradient(150deg, #f3f7ff, #f6f5fb 44%, #f8fcff);
+        color: #172033;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px 16px;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #dde3ee;
+        border-radius: 20px;
+        padding: 40px;
+        max-width: 520px;
+        width: 100%;
+        box-shadow: 0 16px 48px rgba(26,38,67,.12);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 28px;
+      }
+      .brand img {
+        width: 52px;
+        height: 52px;
+        border-radius: 14px;
+      }
+      .brand h1 { font-size: 22px; line-height: 1.1; }
+      .brand p { font-size: 13px; color: #5a6783; margin-top: 4px; }
+      .success-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        background: #eaf8f0;
+        border: 1px solid #bde2ca;
+        color: #1e8e5a;
+        border-radius: 999px;
+        padding: 6px 14px;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 24px;
+      }
+      h2 { font-size: 18px; margin-bottom: 8px; }
+      .subtitle { font-size: 13px; color: #5a6783; margin-bottom: 28px; line-height: 1.5; }
+      .steps { display: flex; flex-direction: column; gap: 16px; margin-bottom: 32px; }
+      .step {
+        display: flex;
+        align-items: flex-start;
+        gap: 14px;
+        padding: 16px;
+        border: 1px solid #dde3ee;
+        border-radius: 14px;
+        background: #f7f9fc;
+      }
+      .step-num {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #3f5efb, #7c3aed);
+        color: #fff;
+        font-size: 13px;
+        font-weight: 700;
+        display: grid;
+        place-items: center;
+        flex-shrink: 0;
+      }
+      .step-body strong { font-size: 13px; display: block; margin-bottom: 3px; }
+      .step-body span { font-size: 12px; color: #5a6783; line-height: 1.5; }
+      .step-body code {
+        background: #eef2ff;
+        border: 1px solid #c9d3ff;
+        border-radius: 6px;
+        padding: 1px 6px;
+        font-size: 11px;
+        color: #3f5efb;
+        font-family: monospace;
+      }
+      .puzzle-icon {
+        display: inline-block;
+        background: #eef2ff;
+        border: 1px solid #c9d3ff;
+        border-radius: 6px;
+        padding: 1px 6px;
+        font-size: 13px;
+        vertical-align: middle;
+      }
+      .cta-row { display: flex; gap: 10px; flex-wrap: wrap; }
+      .btn-primary {
+        flex: 1;
+        padding: 13px 20px;
+        background: linear-gradient(135deg, #3f5efb, #7c3aed);
+        color: #fff;
+        border: none;
+        border-radius: 12px;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        text-align: center;
+        text-decoration: none;
+        display: inline-block;
+      }
+      .btn-secondary {
+        flex: 1;
+        padding: 13px 20px;
+        background: #f0f3ff;
+        color: #3f5efb;
+        border: 1px solid #c9d3ff;
+        border-radius: 12px;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        text-align: center;
+        text-decoration: none;
+        display: inline-block;
+      }
+      .note {
+        margin-top: 20px;
+        font-size: 11px;
+        color: #8a96b0;
+        text-align: center;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="brand">
+        <img src="../assets/logo.png" alt="LDD" />
+        <div>
+          <h1>LDD Enhancer</h1>
+          <p>MD · Quick Actions Bar · Drag and Drop Upload</p>
+        </div>
+      </div>
+
+      <div class="success-badge">✅ Successfully installed!</div>
+
+      <h2>Pin it to your toolbar</h2>
+      <p class="subtitle">Chrome doesn't pin extensions automatically. Follow these two steps so LDD Enhancer is always one click away.</p>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <strong>Click the puzzle piece icon</strong>
+            <span>Look for <span class="puzzle-icon">🧩</span> in the top-right corner of Chrome, next to your address bar.</span>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <strong>Pin LDD Enhancer</strong>
+            <span>Find <code>LDD MD Enhancer</code> in the list and click the 📌 pin icon next to it. It'll appear in your toolbar instantly.</span>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <strong>Head to MD</strong>
+            <span>Navigate to <code>mydesigns.io/app/listings</code> and click the LDD icon in your toolbar to open the enhancer panel.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="cta-row">
+        <a class="btn-primary" href="https://mydesigns.io/app/listings" target="_blank">Open MD →</a>
+      </div>
+
+      <p class="note">LDD Enhancer only activates on MD — it never runs on other sites.</p>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LDD PDF Generator</title>
+  <style>
+    :root {
+      --bg: #0f172a; --surface: #1e293b; --surface2: #334155;
+      --line: #334155; --line2: #475569;
+      --text: #f1f5f9; --muted: #94a3b8; --accent: #8b5cf6;
+      --accent-soft: #1e1b4b; --green: #16a34a; --red: #dc2626;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); font-size: 12px; }
+
+    /* ── Layout ── */
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    #toolbar { height: 44px; background: var(--surface); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 0; flex-shrink: 0; padding: 0 8px; }
+    #main    { flex: 1; display: flex; overflow: hidden; }
+    #sidebar { width: 260px; background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; }
+    #canvas-area { flex: 1; overflow: auto; background: #1a1a2e; display: flex; align-items: flex-start; justify-content: center; padding: 24px; }
+    #props { width: 240px; background: var(--surface); border-left: 1px solid var(--line); overflow-y: auto; flex-shrink: 0; }
+    #props::-webkit-scrollbar { width: 4px; } #props::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 4px; }
+
+    /* ── Toolbar ── */
+    .tb-sep    { width: 1px; height: 24px; background: var(--line); margin: 0 6px; }
+    .tb-btn    { height: 30px; border: none; background: transparent; color: var(--muted); border-radius: 6px; padding: 0 8px; cursor: pointer; font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 4px; transition: all .1s; white-space: nowrap; }
+    .tb-btn:hover  { background: var(--surface2); color: var(--text); }
+    .tb-btn.active { background: var(--accent-soft); color: var(--accent); }
+    .tb-btn.green  { background: #14532d; color: #4ade80; }
+    .tb-btn.green:hover { background: var(--green); color: #fff; }
+    .tb-logo   { width: 24px; height: 24px; border-radius: 6px; margin-right: 6px; }
+    .tb-title  { font-size: 13px; font-weight: 700; color: var(--text); margin-right: 8px; }
+
+    /* ── Sidebar: layer panel ── */
+    #sidebar-header { padding: 8px 10px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    #sidebar-header span { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .sb-add-btn { border: none; background: var(--accent-soft); color: var(--accent); border-radius: 6px; padding: 3px 8px; font-size: 11px; font-weight: 700; cursor: pointer; }
+    #layer-list { flex: 1; overflow-y: auto; }
+    #layer-list::-webkit-scrollbar { width: 3px; } #layer-list::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 3px; }
+    .layer-item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--line); transition: background .1s; user-select: none; }
+    .layer-item:hover   { background: var(--surface2); }
+    .layer-item.sel     { background: var(--accent-soft); }
+    .layer-icon { font-size: 13px; flex-shrink: 0; }
+    .layer-name { flex: 1; font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .layer-vis  { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 2px; }
+    .layer-del  { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 2px; }
+    .layer-del:hover { color: var(--red); }
+
+    /* ── Canvas ── */
+    #canvas-wrap { position: relative; background: #fff; flex-shrink: 0; box-shadow: 0 12px 48px rgba(0,0,0,.5); }
+    #canvas-wrap.snap-on .block:after { display: none; }
+    .block {
+      position: absolute; cursor: move; user-select: none;
+      border: 1.5px solid transparent; border-radius: 2px;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+    }
+    .block:hover   { border-color: rgba(139,92,246,.4); }
+    .block.sel     { border-color: #8b5cf6; }
+    .block.sel .resize-handle { display: block; }
+    .block.hidden-block { opacity: .25; pointer-events: none; }
+    .resize-handle {
+      display: none; position: absolute; width: 8px; height: 8px;
+      background: #fff; border: 1.5px solid #8b5cf6; border-radius: 2px; z-index: 10;
+    }
+    .rh-se { bottom: -4px; right: -4px; cursor: se-resize; }
+    .rh-sw { bottom: -4px; left: -4px;  cursor: sw-resize; }
+    .rh-ne { top: -4px;    right: -4px; cursor: ne-resize; }
+    .rh-nw { top: -4px;    left: -4px;  cursor: nw-resize; }
+    .rh-n  { top: -4px;    left: 50%; transform: translateX(-50%); cursor: n-resize; }
+    .rh-s  { bottom: -4px; left: 50%; transform: translateX(-50%); cursor: s-resize; }
+    .rh-e  { right: -4px;  top: 50%;  transform: translateY(-50%); cursor: e-resize; }
+    .rh-w  { left: -4px;   top: 50%;  transform: translateY(-50%); cursor: w-resize; }
+
+    /* Block content */
+    .block-text    { width: 100%; height: 100%; padding: 8px; overflow: hidden; line-height: 1.35; word-break: break-word; }
+    .block-btn     { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; border-radius: 10px; font-weight: 700; cursor: pointer; }
+    .block-img     { width: 100%; height: 100%; object-fit: contain; }
+    .block-qr      { width: 100%; height: 100%; }
+    .block-divider { width: 100%; height: 100%; display: flex; align-items: center; }
+    .block-divider hr { width: 100%; border: none; }
+
+    /* Guide lines */
+    .guide { position: absolute; pointer-events: none; z-index: 100; }
+    .guide-h { border-top: 1px dashed rgba(139,92,246,.5); width: 100%; }
+    .guide-v { border-left: 1px dashed rgba(139,92,246,.5); height: 100%; }
+
+    /* ── Properties panel ── */
+    #props-header { padding: 8px 10px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+    #props-header span { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    #props-body { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+    .prop-group { display: flex; flex-direction: column; gap: 5px; }
+    .prop-label { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+    .prop-input, .prop-textarea, .prop-select {
+      width: 100%; border: 1px solid var(--line2); border-radius: 6px;
+      padding: 5px 7px; font-size: 11.5px; color: var(--text); background: var(--bg);
+      outline: none; transition: border-color .1s; font-family: inherit;
+    }
+    .prop-input:focus, .prop-textarea:focus, .prop-select:focus { border-color: var(--accent); }
+    .prop-textarea { min-height: 56px; resize: vertical; }
+    .prop-row    { display: flex; gap: 5px; align-items: center; }
+    .prop-row .prop-input  { flex: 1; }
+    .prop-color  { width: 30px; height: 26px; border: 1px solid var(--line2); border-radius: 5px; padding: 2px; cursor: pointer; flex-shrink: 0; }
+    .prop-divider { border: none; border-top: 1px solid var(--line); }
+    .prop-btn-row { display: flex; gap: 5px; flex-wrap: wrap; }
+    .prop-btn    { border: 1px solid var(--line2); background: var(--bg); color: var(--muted); border-radius: 5px; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer; transition: all .1s; }
+    .prop-btn:hover  { border-color: var(--accent); color: var(--text); }
+    .prop-btn.on     { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+    .prop-num    { width: 56px !important; flex-shrink: 0; }
+    .prop-check-row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+    .prop-check-row input { accent-color: var(--accent); cursor: pointer; }
+    .prop-upload { border: 1px dashed var(--line2); border-radius: 6px; padding: 8px; text-align: center; font-size: 11px; color: var(--muted); cursor: pointer; transition: all .1s; }
+    .prop-upload:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* No-selection state */
+    #props-empty { padding: 20px 12px; text-align: center; color: var(--muted); font-size: 11px; line-height: 1.6; }
+
+    /* ── Canvas zoom indicator ── */
+    #zoom-info { position: fixed; bottom: 12px; right: 256px; background: var(--surface2); color: var(--muted); font-size: 10px; font-weight: 600; border-radius: 6px; padding: 3px 8px; pointer-events: none; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <!-- Toolbar -->
+  <div id="toolbar">
+    <img id="tb-logo" class="tb-logo" src="" alt="LDD" />
+    <span class="tb-title">PDF Generator</span>
+    <div class="tb-sep"></div>
+
+    <!-- Add blocks -->
+    <button class="tb-btn" data-add="text">+ Text</button>
+    <button class="tb-btn" data-add="button">+ Button</button>
+    <button class="tb-btn" data-add="image">+ Image</button>
+    <button class="tb-btn" data-add="divider">+ Divider</button>
+    <button class="tb-btn" data-add="qr">+ QR</button>
+    <div class="tb-sep"></div>
+
+    <!-- Source import -->
+    <button class="tb-btn" id="btn-import-pdf">📂 Import PDF</button>
+    <input type="file" id="import-pdf-input" accept=".pdf" style="display:none" />
+    <div class="tb-sep"></div>
+
+    <!-- View toggles -->
+    <button class="tb-btn" id="btn-snap" title="Snap to grid">⊞ Snap</button>
+    <button class="tb-btn" id="btn-guides" title="Show guides">⊕ Guides</button>
+    <div class="tb-sep"></div>
+
+    <!-- Paper -->
+    <select id="tb-paper" style="background:var(--surface2);color:var(--text);border:1px solid var(--line2);border-radius:6px;padding:3px 6px;font-size:11px;cursor:pointer;outline:none;">
+      <option value="letter">US Letter</option>
+      <option value="a4">A4</option>
+    </select>
+    <div class="tb-sep"></div>
+
+    <!-- Zoom -->
+    <button class="tb-btn" id="btn-zoom-out">−</button>
+    <span id="tb-zoom" style="font-size:11px;color:var(--muted);width:38px;text-align:center;">100%</span>
+    <button class="tb-btn" id="btn-zoom-in">+</button>
+    <button class="tb-btn" id="btn-zoom-fit">Fit</button>
+    <div class="tb-sep"></div>
+
+    <button class="tb-btn" id="btn-undo" title="Undo">↩</button>
+    <button class="tb-btn" id="btn-redo" title="Redo">↪</button>
+    <div class="tb-sep" style="margin-left:auto"></div>
+    <button class="tb-btn green" id="btn-export">⬇ Export PDF</button>
+  </div>
+
+  <div id="main">
+    <!-- Layers sidebar -->
+    <div id="sidebar">
+      <div id="sidebar-header">
+        <span>Layers</span>
+        <button class="sb-add-btn" id="btn-add-preset">Presets</button>
+      </div>
+      <div id="layer-list"></div>
+    </div>
+
+    <!-- Canvas -->
+    <div id="canvas-area">
+      <div id="canvas-wrap">
+        <!-- blocks injected here -->
+      </div>
+    </div>
+
+    <!-- Properties -->
+    <div id="props">
+      <div id="props-header"><span>Properties</span></div>
+      <div id="props-empty">Select a block to edit its properties.</div>
+      <div id="props-body" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<div id="zoom-info">100%</div>
+
+<!-- hidden file input for images -->
+<input type="file" id="img-upload-input" accept="image/*" style="display:none" />
+<canvas id="qr-scratch" style="display:none"></canvas>
+
+<script src="../libs/jspdf.umd.min.js"></script>
+<script src="../libs/html2canvas.min.js"></script>
+<script src="../libs/qrious.min.js"></script>
+<script src="./pdfgen-app.js"></script>
+</body>
+</html>
